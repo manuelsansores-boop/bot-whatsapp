@@ -15,8 +15,19 @@ const client = new Client({
 });
 
 // Generar código QR
+// Generar código QR
 client.on('qr', (qr) => {
-    console.log('📱 Escanea este código QR con WhatsApp:');
+    console.log('--------------------------------------------------');
+    console.log('¡NUEVO CÓDIGO! Haz clic en el siguiente enlace RÁPIDAMENTE:');
+    
+    // Generamos un enlace a una imagen del QR usando una API
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qr)}`;
+    
+    console.log(qrImageUrl);
+    console.log('--------------------------------------------------');
+    console.log('Se abrirá una imagen en tu navegador. Escanéala con tu celular.');
+
+    // También intentamos dibujarlo en la consola, no estorba.
     qrcode.generate(qr, { small: true });
 });
 
