@@ -1,20 +1,14 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
-const path = require('path');
-// Comentario para forzar la actualización del archivo
+
 const app = express();
 app.use(express.json());
 
-// Lógica para determinar la ruta de guardado de la sesión.
-// En Render, usará la ruta del disco persistente. Localmente, usará la carpeta de siempre.
-const persistentDataPath = process.env.RENDER ? '/var/data/wwebjs_auth' : path.join(process.cwd(), '.wwebjs_auth');
-
-// Crear cliente de WhatsApp con la configuración para producción
+// Crear cliente de WhatsApp.
+// Esta es la versión simple que guarda la sesión en una carpeta temporal que Render crea y borra.
 const client = new Client({
-    authStrategy: new LocalAuth({
-        dataPath: persistentDataPath
-    }),
+    authStrategy: new LocalAuth(),
     puppeteer: {
         headless: true,
         args: [
@@ -24,7 +18,7 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', // <- este puede ayudar en entornos con pocos recursos
+            '--single-process',
             '--disable-gpu'
         ]
     }
@@ -33,13 +27,12 @@ const client = new Client({
 // Generar código QR
 client.on('qr', (qr) => {
     console.log('--------------------------------------------------');
-    console.log('¡NUEVO CÓDIGO! Haz clic en el siguiente enlace RÁPIDAMENTE:');
+    console.log('¡NUEVO CÓDIGO! Escanea con tu celular o haz clic en el enlace:');
     
     const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qr)}`;
     
     console.log(qrImageUrl);
     console.log('--------------------------------------------------');
-    console.log('Se abrirá una imagen en tu navegador. Escanéala con tu celular.');
 
     qrcode.generate(qr, { small: true });
 });
