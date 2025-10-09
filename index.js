@@ -2,7 +2,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const express = require('express');
 const path = require('path');
-
+// Comentario para forzar la actualización del archivo
 const app = express();
 app.use(express.json());
 
