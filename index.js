@@ -3,7 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 
-// --- CONFIGURACIÓN DEL SERVIDOR WEB ---
+// --- 1. CONFIGURACIÓN DEL SERVIDOR WEB ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
@@ -11,7 +11,7 @@ const io = new Server(server);
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// --- SEGURIDAD: Middleware para el Token ---
+// --- 2. SEGURIDAD: Middleware para el Token de la API ---
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 
 const authMiddleware = (req, res, next) => {
@@ -31,10 +31,10 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// --- CONFIGURACIÓN DE WHATSAPP-WEB.JS ---
+// --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
 const client = new Client({
     authStrategy: new LocalAuth({
-        dataPath: '/data' // Ruta para la sesión persistente
+        dataPath: '/data' // Ruta para la sesión persistente en Render
     }),
     puppeteer: {
         headless: true,
@@ -51,67 +51,85 @@ const client = new Client({
     }
 });
 
-// --- LÓGICA DE LA APLICACIÓN Y COMUNICACIÓN WEB ---
+// --- 4. LÓGICA DE EVENTOS DE WHATSAPP ---
 
-// 1. Cuando un navegador se conecta a nuestra página web
+// Evento para la conexión con la página web
 io.on('connection', (socket) => {
     console.log('✅ Un usuario se ha conectado a la página web.');
     socket.emit('status', 'Iniciando WhatsApp...');
-    socket.on('disconnect', () => {
-        console.log('❌ Un usuario se ha desconectado de la página web.');
-    });
 });
 
-// 2. Eventos del cliente de WhatsApp para la interfaz web
+// Evento para generar el código QR
 client.on('qr', (qr) => {
     console.log('NUEVO CÓDIGO QR, revísalo en la página web.');
     io.emit('qr', qr);
     io.emit('status', 'Código QR recibido. Por favor, escanea.');
 });
 
+// Evento cuando el cliente está listo
 client.on('ready', () => {
     console.log('✅ WhatsApp conectado y listo para operar!');
     io.emit('status', '✅ ¡WhatsApp conectado y listo!');
 });
 
+// Evento de desconexión
 client.on('disconnected', (reason) => {
     console.log('❌ WhatsApp fue desconectado:', reason);
     io.emit('status', '❌ WhatsApp desconectado. Intentando reconectar...');
     client.initialize();
 });
 
-// ******************************************************
-// ******** NUEVA SECCIÓN PARA ESCUCHAR MENSAJES ********
-// ******************************************************
+// Evento para escuchar mensajes (de otros y tuyos)
 client.on('message', async (msg) => {
-    console.log('MENSAJE RECIBIDO:', msg.from, '->', msg.body);
-
-    // Ignoramos mensajes de grupos y estados para simplificar
+    // Ignoramos mensajes de estados y grupos para simplificar
     if (msg.isStatus || msg.isGroup) return;
 
-    const textoRecibido = msg.body.toLowerCase();
-    const remitente = msg.from;
+    // LÓGICA PARA TUS PROPIOS MENSAJES (CONTROL REMOTO)
+    if (msg.fromMe) {
+        const textoEnviado = msg.body.toLowerCase();
+        const chatDondeEscribiste = msg.to;
 
-    // ----- LÓGICA DEL CHATBOT -----
+        console.log(`Comando enviado por mí en el chat ${chatDondeEscribiste}: "${textoEnviado}"`);
 
-    if (textoRecibido === 'hola') {
-        await client.sendMessage(remitente, '¡Hola! 👋 Soy un bot, ¿en qué puedo ayudarte?');
-    }
+        if (textoEnviado === '!status') {
+            await client.sendMessage(chatDondeEscribiste, '🤖✅ Bot conectado y funcionando.');
+        }
 
-    if (textoRecibido === 'fecha') {
-        const fechaActual = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-        await client.sendMessage(remitente, `La fecha y hora actual es: ${fechaActual}`);
-    }
+        if (textoEnviado.startsWith('!decir ')) {
+            const mensajeParaRepetir = msg.body.substring(7);
+            await client.sendMessage(chatDondeEscribiste, mensajeParaRepetir);
+        }
+    
+    // LÓGICA PARA MENSAJES RECIBIDOS DE OTRAS PERSONAS (CHATBOT)
+    } else {
+        const textoRecibido = msg.body.toLowerCase();
+        const remitente = msg.from;
 
-    if (textoRecibido === 'gracias') {
-        await msg.react('👍');
+        console.log(`Mensaje recibido de ${remitente}: "${textoRecibido}"`);
+        
+        if (textoRecibido === 'hola') {
+            await client.sendMessage(remitente, '¡Hola! 👋 Soy un bot, ¿en qué puedo ayudarte?');
+        }
+
+        if (textoRecibido === 'fecha') {
+            const fechaActual = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
+            await client.sendMessage(remitente, `La fecha y hora actual es: ${fechaActual}`);
+        }
     }
 });
 
-// Iniciar el cliente de WhatsApp
+// Evento para saber el estado de entrega de los mensajes que envías
+client.on('message_ack', (msg, ack) => {
+    /* ACK STATUS: 1=ENVIADO, 2=ENTREGADO, 3=LEÍDO */
+    if (ack == 3) {
+        console.log(`MENSAJE a ${msg.to} fue LEÍDO.`);
+    }
+});
+
+// --- 5. INICIAR EL CLIENTE DE WHATSAPP ---
 client.initialize();
 
-// --- DEFINICIÓN DE RUTAS (ENDPOINTS) ---
+// --- 6. DEFINICIÓN DE RUTAS DE LA API ---
 
 // Ruta principal para mostrar la interfaz gráfica
 app.get('/', (req, res) => {
@@ -137,7 +155,7 @@ app.post('/enviar', authMiddleware, async (req, res) => {
     }
 });
 
-// --- INICIAR SERVIDOR ---
+// --- 7. INICIAR SERVIDOR WEB ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
