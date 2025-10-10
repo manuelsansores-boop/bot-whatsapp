@@ -81,15 +81,21 @@ client.on('disconnected', (reason) => {
 
 // Evento para escuchar mensajes (de otros y tuyos)
 client.on('message', async (msg) => {
-    // Ignoramos mensajes de estados y grupos para simplificar
-    if (msg.isStatus || msg.isGroup) return;
+    // --- Bloque de depuración: Imprime detalles de CADA mensaje detectado ---
+    console.log('--- ¡NUEVO MENSAJE DETECTADO! ---');
+    console.log('ID del Chat:', msg.from);
+    console.log('Enviado por mí?:', msg.fromMe);
+    console.log('Cuerpo del Mensaje:', msg.body);
+    console.log('¿Es un grupo?:', msg.isGroup);
+    console.log('---------------------------------');
+
+    // Ignoramos solo los mensajes de estados para no procesarlos
+    if (msg.isStatus) return;
 
     // LÓGICA PARA TUS PROPIOS MENSAJES (CONTROL REMOTO)
     if (msg.fromMe) {
         const textoEnviado = msg.body.toLowerCase();
         const chatDondeEscribiste = msg.to;
-
-        console.log(`Comando enviado por mí en el chat ${chatDondeEscribiste}: "${textoEnviado}"`);
 
         if (textoEnviado === '!status') {
             await client.sendMessage(chatDondeEscribiste, '🤖✅ Bot conectado y funcionando.');
@@ -104,8 +110,6 @@ client.on('message', async (msg) => {
     } else {
         const textoRecibido = msg.body.toLowerCase();
         const remitente = msg.from;
-
-        console.log(`Mensaje recibido de ${remitente}: "${textoRecibido}"`);
         
         if (textoRecibido === 'hola') {
             await client.sendMessage(remitente, '¡Hola! 👋 Soy un bot, ¿en qué puedo ayudarte?');
