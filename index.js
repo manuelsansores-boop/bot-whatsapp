@@ -1,14 +1,49 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
 
+// --- CONFIGURACIÓN DEL SERVIDOR WEB ---
 const app = express();
-app.use(express.json());
+const server = http.createServer(app);
+const io = new Server(server);
 
-// Crear cliente de WhatsApp.
-// Esta es la versión simple que guarda la sesión en una carpeta temporal que Render crea y borra.
+app.use(express.json());
+app.set('view engine', 'ejs'); // Usaremos EJS para renderizar la página HTML
+
+// --- SEGURIDAD: Middleware para el Token ---
+const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
+
+const authMiddleware = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    // El formato del header es "Bearer TOKEN"
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!MI_TOKEN_SECRETO) {
+        // Si no se configuró un token en el servidor, se deniega por seguridad.
+        console.error("AUTH_TOKEN no está configurado en las variables de entorno.");
+        return res.status(500).json({ success: false, error: 'Error de configuración del servidor.' });
+    }
+
+    if (token == null) {
+        return res.status(401).json({ success: false, error: 'No se proveyó un token de autorización.' });
+    }
+
+    if (token !== MI_TOKEN_SECRETO) {
+        return res.status(403).json({ success: false, error: 'El token proporcionado no es válido.' });
+    }
+    
+    // Si el token es correcto, la petición continúa.
+    next();
+};
+
+
+// --- CONFIGURACIÓN DE WHATSAPP-WEB.JS ---
+// Usamos el path del Disco Persistente de Render para guardar la sesión
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({
+        dataPath: '/data' // ¡Esta es la clave para la persistencia!
+    }),
     puppeteer: {
         headless: true,
         args: [
@@ -24,29 +59,52 @@ const client = new Client({
     }
 });
 
-// Generar código QR
+
+// --- LÓGICA DE LA APLICACIÓN Y COMUNICACIÓN WEB ---
+
+// 1. Cuando un navegador se conecta a nuestra página web
+io.on('connection', (socket) => {
+    console.log('✅ Un usuario se ha conectado a la página web.');
+    socket.emit('status', 'Iniciando WhatsApp...'); // Informa al nuevo usuario
+
+    socket.on('disconnect', () => {
+        console.log('❌ Un usuario se ha desconectado de la página web.');
+    });
+});
+
+// 2. Eventos del cliente de WhatsApp
 client.on('qr', (qr) => {
     console.log('--------------------------------------------------');
-    console.log('¡NUEVO CÓDIGO! Escanea con tu celular o haz clic en el enlace:');
-    
-    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qr)}`;
-    
-    console.log(qrImageUrl);
+    console.log('¡NUEVO CÓDIGO QR! Escanea desde la página web.');
     console.log('--------------------------------------------------');
-
-    qrcode.generate(qr, { small: true });
+    io.emit('qr', qr); // Envía el código QR a la página web
+    io.emit('status', 'Código QR recibido. Por favor, escanea.');
 });
 
-// WhatsApp listo
 client.on('ready', () => {
-    console.log('✅ WhatsApp conectado y listo!');
+    console.log('✅ WhatsApp conectado y listo para operar!');
+    io.emit('status', '✅ ¡WhatsApp conectado y listo!'); // Informa a la web que está listo
 });
 
-// Inicializar WhatsApp
+client.on('disconnected', (reason) => {
+    console.log('❌ WhatsApp fue desconectado:', reason);
+    io.emit('status', '❌ WhatsApp desconectado. Intentando reconectar...');
+    client.initialize(); // Intenta reinicializar para obtener un nuevo QR si es necesario
+});
+
+// Iniciar el cliente de WhatsApp
 client.initialize();
 
-// API para recibir peticiones de envío
-app.post('/enviar', async (req, res) => {
+
+// --- DEFINICIÓN DE RUTAS (ENDPOINTS) ---
+
+// Ruta principal para mostrar la interfaz gráfica
+app.get('/', (req, res) => {
+    res.render('index');
+});
+
+// Ruta para enviar mensajes (protegida por el token)
+app.post('/enviar', authMiddleware, async (req, res) => {
     const { numero, mensaje } = req.body;
 
     if (!numero || !mensaje) {
@@ -57,20 +115,16 @@ app.post('/enviar', async (req, res) => {
         const chatId = `${numero}@c.us`;
         await client.sendMessage(chatId, mensaje);
         console.log(`✅ Mensaje enviado a ${numero}`);
-        res.json({ success: true, message: 'Mensaje enviado' });
+        res.json({ success: true, message: 'Mensaje enviado correctamente.' });
     } catch (error) {
         console.error('❌ Error al enviar mensaje:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Ruta de Health Check para que Render sepa que la app está viva
-app.get('/', (req, res) => {
-    res.status(200).json({ status: 'ok', message: 'WhatsApp API is running' });
-});
 
-// Levantar servidor
+// --- INICIAR SERVIDOR ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
 });
