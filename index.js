@@ -11,6 +11,10 @@ const io = new Server(server);
 app.use(express.json());
 app.set('view engine', 'ejs');
 
+// *** VÁLVULA DE SEGURIDAD (NUEVO) ***
+// Variable para saber si el bot está listo y evitar errores al enviar
+let isClientReady = false;
+
 // --- 2. SEGURIDAD: Middleware para el Token de la API ---
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 
@@ -34,7 +38,8 @@ const authMiddleware = (req, res, next) => {
 // --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
 const client = new Client({
     authStrategy: new LocalAuth({
-        dataPath: '/data' // Ruta para la sesión persistente en Render
+        clientId: "client-one",
+        dataPath: '/data' 
     }),
     puppeteer: {
         headless: true,
@@ -48,7 +53,14 @@ const client = new Client({
             '--single-process',
             '--disable-gpu'
         ]
-    }
+    },
+    // *** CORRECCIÓN DE VERSIÓN (NUEVO) ***
+    // Esto evita el error "reading getChat"
+    webVersionCache: {
+        type: "remote",
+        remotePath:
+            "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
+    },
 });
 
 // --- 4. LÓGICA DE EVENTOS DE WHATSAPP ---
@@ -70,12 +82,14 @@ client.on('qr', (qr) => {
 client.on('ready', () => {
     console.log('✅ WhatsApp conectado y listo para operar!');
     io.emit('status', '✅ ¡WhatsApp conectado y listo!');
+    isClientReady = true; // <--- ACTIVAMOS LA VÁLVULA
 });
 
 // Evento de desconexión
 client.on('disconnected', (reason) => {
     console.log('❌ WhatsApp fue desconectado:', reason);
     io.emit('status', '❌ WhatsApp desconectado. Intentando reconectar...');
+    isClientReady = false; // <--- CERRAMOS LA VÁLVULA
     client.initialize();
 });
 
@@ -112,7 +126,7 @@ client.on('message', async (msg) => {
         const remitente = msg.from;
         
         if (textoRecibido === 'hola') {
-            await client.sendMessage(remitente, '¡Hola! 👋 Soy un bot, ¿en qué puedo ayudarte?');
+            await client.sendMessage(remitente, '¡Hola! 👋 ¿en qué puedo ayudarte?');
         }
 
         if (textoRecibido === 'fecha') {
@@ -146,6 +160,15 @@ app.post('/enviar', authMiddleware, async (req, res) => {
 
     if (!numero || !mensaje) {
         return res.status(400).json({ success: false, error: 'El número y el mensaje son obligatorios.' });
+    }
+
+    // *** PROTECCIÓN (NUEVO) ***
+    // Si el bot no está listo, rechazamos la petición para evitar que Render se caiga
+    if (!isClientReady) {
+        return res.status(503).json({ 
+            success: false, 
+            error: 'El bot aún se está iniciando o reconectando. Espera unos segundos.' 
+        });
     }
     
     try {
