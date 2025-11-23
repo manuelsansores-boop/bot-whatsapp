@@ -72,10 +72,14 @@ io.on('connection', (socket) => {
 });
 
 // Evento para generar el código QR
+// Evento para generar el código QR
 client.on('qr', (qr) => {
-    console.log('NUEVO CÓDIGO QR, revísalo en la página web.');
+    // Creamos una fecha legible para que sepas si es viejo o nuevo
+    const hora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City' });
+    console.log(`[${hora}] 📸 NUEVO CÓDIGO QR GENERADO. ¡Corre a escanear!`);
+    
     io.emit('qr', qr);
-    io.emit('status', 'Código QR recibido. Por favor, escanea.');
+    io.emit('status', `Código QR nuevo recibido a las ${hora}. ¡Escanea rápido!`);
 });
 
 // Evento cuando el cliente está listo
