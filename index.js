@@ -11,7 +11,7 @@ const io = new Server(server);
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// *** VÁLVULA DE SEGURIDAD (NUEVO) ***
+// *** VÁLVULA DE SEGURIDAD ***
 // Variable para saber si el bot está listo y evitar errores al enviar
 let isClientReady = false;
 
@@ -35,14 +35,15 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-
+// --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
 const client = new Client({
-    // 1. EL DISFRAZ (¡NUEVO IMPORTANTE!)
-    // Esto hace creer a WhatsApp que eres una PC normal y evita el bloqueo "VERSION"
+    // *** 1. EL DISFRAZ (CRUCIAL PARA EVITAR EL ERROR "VERSION") ***
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
-    
+
     authStrategy: new LocalAuth({
-        clientId: "sesion-final-v3", // <--- CAMBIAMOS EL NOMBRE OTRA VEZ
+        // *** 2. NOMBRE NUEVO = CARPETA NUEVA ***
+        // Esto evita que lea la sesión corrupta del disco
+        clientId: "sesion-reparada-final", 
         dataPath: '/data' 
     }),
     puppeteer: {
@@ -58,9 +59,10 @@ const client = new Client({
             '--disable-gpu'
         ]
     },
-     // *** CORRECCIÓN DE VERSIÓN (NUEVO) ***
-    // Esto evita el error "reading getChat"
-    /*webVersionCache: {
+    // *** 3. DESBLOQUEO DE VERSIÓN ***
+    // Dejamos esto comentado para que baje la versión moderna que SÍ entiende los LIDs
+    /*
+    webVersionCache: {
         type: "remote",
         remotePath:
             "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
@@ -77,9 +79,8 @@ io.on('connection', (socket) => {
 });
 
 // Evento para generar el código QR
-// Evento para generar el código QR
 client.on('qr', (qr) => {
-    // Creamos una fecha legible para que sepas si es viejo o nuevo
+    // Creamos una fecha legible
     const hora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City' });
     console.log(`[${hora}] 📸 NUEVO CÓDIGO QR GENERADO. ¡Corre a escanear!`);
     
@@ -99,57 +100,51 @@ client.on('disconnected', (reason) => {
     console.log('❌ WhatsApp fue desconectado:', reason);
     io.emit('status', '❌ WhatsApp desconectado. Intentando reconectar...');
     isClientReady = false; // <--- CERRAMOS LA VÁLVULA
+    
+    // Reiniciamos para intentar conectar de nuevo
     client.initialize();
 });
 
-// Evento para escuchar mensajes (de otros y tuyos)
+// Evento para escuchar mensajes
 client.on('message', async (msg) => {
-    // --- Bloque de depuración: Imprime detalles de CADA mensaje detectado ---
-    console.log('--- ¡NUEVO MENSAJE DETECTADO! ---');
-    console.log('ID del Chat:', msg.from);
-    console.log('Enviado por mí?:', msg.fromMe);
-    console.log('Cuerpo del Mensaje:', msg.body);
-    console.log('¿Es un grupo?:', msg.isGroup);
-    console.log('---------------------------------');
+    // Depuración básica
+    // console.log('--- MSG ---', msg.from);
 
-    // Ignoramos solo los mensajes de estados para no procesarlos
     if (msg.isStatus) return;
 
     // LÓGICA PARA TUS PROPIOS MENSAJES (CONTROL REMOTO)
     if (msg.fromMe) {
         const textoEnviado = msg.body.toLowerCase();
-        const chatDondeEscribiste = msg.to;
-
+        
         if (textoEnviado === '!status') {
-            await client.sendMessage(chatDondeEscribiste, '🤖✅ Bot conectado y funcionando.');
+            await client.sendMessage(msg.to, '🤖✅ Bot conectado y funcionando.');
         }
 
         if (textoEnviado.startsWith('!decir ')) {
             const mensajeParaRepetir = msg.body.substring(7);
-            await client.sendMessage(chatDondeEscribiste, mensajeParaRepetir);
+            await client.sendMessage(msg.to, mensajeParaRepetir);
         }
     
-    // LÓGICA PARA MENSAJES RECIBIDOS DE OTRAS PERSONAS (CHATBOT)
+    // LÓGICA PARA MENSAJES DE OTROS
     } else {
         const textoRecibido = msg.body.toLowerCase();
-        const remitente = msg.from;
         
         if (textoRecibido === 'hola') {
-            await client.sendMessage(remitente, '¡Hola! 👋 ¿en qué puedo ayudarte?');
+            await client.sendMessage(msg.from, '¡Hola! 👋 ¿en qué puedo ayudarte?');
         }
 
         if (textoRecibido === 'fecha') {
             const fechaActual = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-            await client.sendMessage(remitente, `La fecha y hora actual es: ${fechaActual}`);
+            await client.sendMessage(msg.from, `La fecha y hora actual es: ${fechaActual}`);
         }
     }
 });
 
-// Evento para saber el estado de entrega de los mensajes que envías
+// Evento para saber el estado de entrega
 client.on('message_ack', (msg, ack) => {
-    /* ACK STATUS: 1=ENVIADO, 2=ENTREGADO, 3=LEÍDO */
+    // ACK 3 = LEÍDO
     if (ack == 3) {
-        console.log(`MENSAJE a ${msg.to} fue LEÍDO.`);
+        // console.log(`MENSAJE a ${msg.to} fue LEÍDO.`);
     }
 });
 
@@ -158,12 +153,10 @@ client.initialize();
 
 // --- 6. DEFINICIÓN DE RUTAS DE LA API ---
 
-// Ruta principal para mostrar la interfaz gráfica
 app.get('/', (req, res) => {
     res.render('index');
 });
 
-// Ruta para enviar mensajes (protegida por el token)
 app.post('/enviar', authMiddleware, async (req, res) => {
     const { numero, mensaje } = req.body;
 
@@ -171,8 +164,7 @@ app.post('/enviar', authMiddleware, async (req, res) => {
         return res.status(400).json({ success: false, error: 'El número y el mensaje son obligatorios.' });
     }
 
-    // *** PROTECCIÓN (NUEVO) ***
-    // Si el bot no está listo, rechazamos la petición para evitar que Render se caiga
+    // Si el bot no está listo, rechazamos para evitar caídas
     if (!isClientReady) {
         return res.status(503).json({ 
             success: false, 
