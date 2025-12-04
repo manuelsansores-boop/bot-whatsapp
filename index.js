@@ -38,7 +38,7 @@ const authMiddleware = (req, res, next) => {
 // --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
 const client = new Client({
     authStrategy: new LocalAuth({
-        clientId: "client-one",
+        clientId: "sesion-nueva-v1",
         dataPath: '/data' 
     }),
     puppeteer: {
@@ -56,11 +56,12 @@ const client = new Client({
     },
     // *** CORRECCIÓN DE VERSIÓN (NUEVO) ***
     // Esto evita el error "reading getChat"
-    webVersionCache: {
+    /*webVersionCache: {
         type: "remote",
         remotePath:
             "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
     },
+    */
 });
 
 // --- 4. LÓGICA DE EVENTOS DE WHATSAPP ---
