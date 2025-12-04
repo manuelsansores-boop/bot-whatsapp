@@ -35,10 +35,14 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
+
 const client = new Client({
+    // 1. EL DISFRAZ (¡NUEVO IMPORTANTE!)
+    // Esto hace creer a WhatsApp que eres una PC normal y evita el bloqueo "VERSION"
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
+    
     authStrategy: new LocalAuth({
-        clientId: "sesion-nueva-v1",
+        clientId: "sesion-final-v3", // <--- CAMBIAMOS EL NOMBRE OTRA VEZ
         dataPath: '/data' 
     }),
     puppeteer: {
@@ -54,7 +58,7 @@ const client = new Client({
             '--disable-gpu'
         ]
     },
-    // *** CORRECCIÓN DE VERSIÓN (NUEVO) ***
+     // *** CORRECCIÓN DE VERSIÓN (NUEVO) ***
     // Esto evita el error "reading getChat"
     /*webVersionCache: {
         type: "remote",
