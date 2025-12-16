@@ -3,48 +3,41 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 
-// --- 1. CONFIGURACIÓN DEL SERVIDOR WEB ---
+// --- CONFIGURACIÓN ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+const PORT = process.env.PORT || 3000;
+const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// *** VÁLVULA DE SEGURIDAD ***
-// Variable para saber si el bot está listo y evitar errores al enviar
+// --- VARIABLES DE ESTADO Y COLA ---
 let isClientReady = false;
+let messageQueue = []; // Aquí se guardarán los mensajes antes de salir
+let isProcessingQueue = false; // Semáforo para saber si estamos enviando
 
-// --- 2. SEGURIDAD: Middleware para el Token de la API ---
-const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
-
+// --- MIDDLEWARE DE SEGURIDAD ---
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
-    if (!MI_TOKEN_SECRETO) {
-        console.error("AUTH_TOKEN no está configurado en las variables de entorno.");
-        return res.status(500).json({ success: false, error: 'Error de configuración del servidor.' });
-    }
-    if (token == null) {
-        return res.status(401).json({ success: false, error: 'No se proveyó un token de autorización.' });
-    }
-    if (token !== MI_TOKEN_SECRETO) {
-        return res.status(403).json({ success: false, error: 'El token proporcionado no es válido.' });
-    }
+    if (!MI_TOKEN_SECRETO) return res.status(500).json({ error: 'Configura AUTH_TOKEN en Render' });
+    if (token !== MI_TOKEN_SECRETO) return res.status(403).json({ error: 'Token inválido' });
     next();
 };
 
-// --- 3. CONFIGURACIÓN DEL CLIENTE DE WHATSAPP ---
+// --- CLIENTE WHATSAPP ---
 const client = new Client({
-    // *** 1. EL DISFRAZ (CRUCIAL PARA EVITAR EL ERROR "VERSION") ***
+    // Usamos el userAgent para parecer un navegador normal
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
-
+    
     authStrategy: new LocalAuth({
-        // *** 2. NOMBRE NUEVO = CARPETA NUEVA ***
-        // Esto evita que lea la sesión corrupta del disco
-        clientId: "sesion-reparada-final", 
-        dataPath: '/data' 
+        // ¡IMPORTANTE! Cambié el nombre a 'sesion-v3-limpia'.
+        // Esto crea una carpeta nueva y evita el error de la sesión corrupta anterior.
+        clientId: "sesion-v3-limpia", 
+        dataPath: '/data'
     }),
     puppeteer: {
         headless: true,
@@ -55,136 +48,135 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process',
+            '--single-process', // Importante para ahorrar memoria en Render
             '--disable-gpu'
         ]
-    },
-    // *** 3. DESBLOQUEO DE VERSIÓN ***
-    // Dejamos esto comentado para que baje la versión moderna que SÍ entiende los LIDs
-    /*
-    webVersionCache: {
-        type: "remote",
-        remotePath:
-            "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html",
-    },
-    */
+    }
 });
 
-// --- 4. LÓGICA DE EVENTOS DE WHATSAPP ---
+// --- SISTEMA DE COLA (QUEUE) ---
+// Esta función procesa los mensajes uno por uno para no saturar la memoria
+const processQueue = async () => {
+    if (isProcessingQueue || messageQueue.length === 0) return;
 
-// Evento para la conexión con la página web
-io.on('connection', (socket) => {
-    console.log('✅ Un usuario se ha conectado a la página web.');
-    socket.emit('status', 'Iniciando WhatsApp...');
-});
+    isProcessingQueue = true;
+    const item = messageQueue[0]; // Miramos el primer mensaje
 
-// Evento para generar el código QR
+    try {
+        console.log(`⏳ Procesando mensaje para: ${item.numero}...`);
+        
+        // 1. Verificar si el usuario tiene WhatsApp (Soluciona error "No LID")
+        // Formateamos el número para asegurar que termine en @c.us correctamente para la búsqueda
+        const sanitizedNumber = item.numero.replace('@c.us', '') + '@c.us';
+        
+        // Preguntamos a WhatsApp si existe este ID
+        const contact = await client.getNumberId(sanitizedNumber);
+
+        if (contact) {
+            // 2. Si existe, enviamos usando el ID serializado correcto
+            await client.sendMessage(contact._serialized, item.mensaje);
+            console.log(`✅ Enviado a ${item.numero}`);
+            item.resolve({ success: true, message: 'Enviado correctamente' });
+        } else {
+            console.warn(`⚠️ El número ${item.numero} no está registrado en WhatsApp.`);
+            item.resolve({ success: false, error: 'El número no tiene WhatsApp registrado' });
+        }
+
+    } catch (error) {
+        console.error(`❌ Error enviando a ${item.numero}:`, error.message);
+        // No fallamos la promesa, devolvemos success:false para que el cliente sepa
+        item.resolve({ success: false, error: error.message });
+    } finally {
+        // 3. Limpieza y retardo
+        messageQueue.shift(); // Sacamos el mensaje de la lista
+        
+        // Esperamos 5 SEGUNDOS antes del siguiente mensaje.
+        // Esto es CRUCIAL para evitar que te bloqueen o se caiga el servidor.
+        setTimeout(() => {
+            isProcessingQueue = false;
+            processQueue(); // Llamamos recursivamente para el siguiente
+        }, 5000); 
+    }
+};
+
+// --- EVENTOS DEL CLIENTE ---
 client.on('qr', (qr) => {
-    // Creamos una fecha legible
-    const hora = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City' });
-    console.log(`[${hora}] 📸 NUEVO CÓDIGO QR GENERADO. ¡Corre a escanear!`);
-    
+    console.log('📸 Nuevo QR generado');
     io.emit('qr', qr);
-    io.emit('status', `Código QR nuevo recibido a las ${hora}. ¡Escanea rápido!`);
+    io.emit('status', 'Escanea el QR nuevo (Sesión reiniciada)');
 });
 
-// Evento cuando el cliente está listo
 client.on('ready', () => {
-    console.log('✅ WhatsApp conectado y listo para operar!');
-    io.emit('status', '✅ ¡WhatsApp conectado y listo!');
-    isClientReady = true; // <--- ACTIVAMOS LA VÁLVULA
+    console.log('🚀 WhatsApp listo!');
+    isClientReady = true;
+    io.emit('status', '✅ WhatsApp Conectado y Listo');
 });
 
-// Evento de desconexión
+client.on('authenticated', () => {
+    console.log('🔑 Autenticado correctamente');
+    io.emit('status', 'Autenticado, cargando chats...');
+});
+
+client.on('auth_failure', (msg) => {
+    console.error('❌ Fallo de autenticación', msg);
+    io.emit('status', 'Fallo de autenticación. Reiniciando...');
+});
+
 client.on('disconnected', (reason) => {
-    console.log('❌ WhatsApp fue desconectado:', reason);
-    io.emit('status', '❌ WhatsApp desconectado. Intentando reconectar...');
-    isClientReady = false; // <--- CERRAMOS LA VÁLVULA
-    
-    // Reiniciamos para intentar conectar de nuevo
+    console.log('❌ Desconectado:', reason);
+    isClientReady = false;
+    io.emit('status', '❌ Desconectado. El bot intentará reconectar...');
     client.initialize();
 });
 
-// Evento para escuchar mensajes
+// Evento: Mensajes entrantes (opcional, para debug)
 client.on('message', async (msg) => {
-    // Depuración básica
-    // console.log('--- MSG ---', msg.from);
-
-    if (msg.isStatus) return;
-
-    // LÓGICA PARA TUS PROPIOS MENSAJES (CONTROL REMOTO)
-    if (msg.fromMe) {
-        const textoEnviado = msg.body.toLowerCase();
-        
-        if (textoEnviado === '!status') {
-            await client.sendMessage(msg.to, '🤖✅ Bot conectado y funcionando.');
-        }
-
-        if (textoEnviado.startsWith('!decir ')) {
-            const mensajeParaRepetir = msg.body.substring(7);
-            await client.sendMessage(msg.to, mensajeParaRepetir);
-        }
-    
-    // LÓGICA PARA MENSAJES DE OTROS
-    } else {
-        const textoRecibido = msg.body.toLowerCase();
-        
-        if (textoRecibido === 'hola') {
-            await client.sendMessage(msg.from, '¡Hola! 👋 ¿en qué puedo ayudarte?');
-        }
-
-        if (textoRecibido === 'fecha') {
-            const fechaActual = new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' });
-            await client.sendMessage(msg.from, `La fecha y hora actual es: ${fechaActual}`);
-        }
+    if(msg.body === '!ping') {
+        msg.reply('pong');
     }
 });
 
-// Evento para saber el estado de entrega
-client.on('message_ack', (msg, ack) => {
-    // ACK 3 = LEÍDO
-    if (ack == 3) {
-        // console.log(`MENSAJE a ${msg.to} fue LEÍDO.`);
-    }
-});
-
-// --- 5. INICIAR EL CLIENTE DE WHATSAPP ---
-client.initialize();
-
-// --- 6. DEFINICIÓN DE RUTAS DE LA API ---
+// --- RUTAS API ---
 
 app.get('/', (req, res) => {
     res.render('index');
+});
+
+// Ruta para ver estado de la cola (Utilidad nueva)
+app.get('/cola', (req, res) => {
+    res.json({ 
+        pendientes: messageQueue.length, 
+        procesando: isProcessingQueue 
+    });
 });
 
 app.post('/enviar', authMiddleware, async (req, res) => {
     const { numero, mensaje } = req.body;
 
     if (!numero || !mensaje) {
-        return res.status(400).json({ success: false, error: 'El número y el mensaje son obligatorios.' });
+        return res.status(400).json({ success: false, error: 'Faltan datos' });
     }
 
-    // Si el bot no está listo, rechazamos para evitar caídas
     if (!isClientReady) {
-        return res.status(503).json({ 
-            success: false, 
-            error: 'El bot aún se está iniciando o reconectando. Espera unos segundos.' 
-        });
+        return res.status(503).json({ success: false, error: 'El bot no está listo todavía' });
     }
-    
-    try {
-        const chatId = `${numero}@c.us`;
-        await client.sendMessage(chatId, mensaje);
-        console.log(`✅ Mensaje enviado a ${numero}`);
-        res.json({ success: true, message: 'Mensaje enviado correctamente.' });
-    } catch (error) {
-        console.error('❌ Error al enviar mensaje:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
+
+    // EN LUGAR DE ENVIAR DE GOLPE, AGREGAMOS A LA COLA
+    // Creamos una promesa para responder al cliente HTTP cuando su turno pase
+    new Promise((resolve, reject) => {
+        messageQueue.push({ numero, mensaje, resolve, reject });
+        processQueue(); // Intentamos arrancar la cola si está parada
+    })
+    .then((resultado) => {
+        res.json(resultado);
+    })
+    .catch((err) => {
+        res.status(500).json({ success: false, error: err.message });
+    });
 });
 
-// --- 7. INICIAR SERVIDOR WEB ---
-const PORT = process.env.PORT || 3000;
+// --- INICIO ---
+client.initialize();
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
+    console.log(`Servidor corriendo en puerto ${PORT}`);
 });

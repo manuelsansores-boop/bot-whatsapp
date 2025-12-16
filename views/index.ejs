@@ -3,75 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Control Bot WhatsApp</title>
+    <title>WhatsApp Bot Monitor</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; justify-content: center; align-items: center; flex-direction: column; height: 100vh; background-color: #f0f2f5; margin: 0; color: #333; }
-        #container { text-align: center; background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 90%; }
-        h1 { color: #128C7E; margin-top: 0; }
-        #status { font-size: 1.2em; margin-bottom: 20px; font-weight: 500; min-height: 25px;}
-        #qrcode canvas { display: block; margin: 0 auto; }
-        #qrcode { min-height: 260px; min-width: 260px; display: flex; justify-content: center; align-items: center; }
-        .loader { border: 8px solid #f3f3f3; border-radius: 50%; border-top: 8px solid #128C7E; width: 50px; height: 50px; animation: spin 2s linear infinite; }
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f2f5; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
+        h1 { color: #075e54; }
+        #status { margin: 1rem 0; font-weight: bold; color: #555; }
+        #qr-container { display: flex; justify-content: center; margin-top: 1rem; min-height: 260px; }
+        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #075e54; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        footer { margin-top: 20px; font-size: 0.8em; color: #888; }
     </style>
 </head>
 <body>
-    <div id="container">
-        <h1>Estado del Bot</h1>
-        <div id="status">Iniciando conexión...</div>
-        <div id="qrcode">
+    <div class="card">
+        <h1>Bot WhatsApp</h1>
+        <div id="status">Conectando con el servidor...</div>
+        <div id="qr-container">
             <div class="loader"></div>
         </div>
     </div>
-    <footer>Desarrollado por ARMAN</footer>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
         const statusDiv = document.getElementById('status');
-        const qrDiv = document.getElementById('qrcode');
+        const qrContainer = document.getElementById('qr-container');
 
-        // Escucha el evento 'status' del servidor
-        socket.on('status', (message) => {
-            statusDiv.textContent = message;
-            // Si el mensaje indica que está conectado, limpiamos el QR y el loader.
-            if (message.includes('¡WhatsApp conectado y listo!')) {
-                qrDiv.innerHTML = '🎉';
-                qrDiv.style.fontSize = '80px';
+        socket.on('status', (msg) => {
+            statusDiv.innerText = msg;
+            if(msg.includes('Listo') || msg.includes('Autenticado')) {
+                qrContainer.innerHTML = '<h2 style="font-size: 50px;">✅</h2>';
             }
         });
 
-        // Escucha el evento 'qr' del servidor
-        socket.on('qr', (qr) => {
-            statusDiv.textContent = '¡Escanea el código para conectar!';
-            qrDiv.innerHTML = ''; // Limpiamos el loader
-            
-            // Creamos un canvas para el QR Code
-            const canvas = document.createElement('canvas');
-            qrDiv.appendChild(canvas);
-
-            // Usamos la API nativa del navegador para generar el QR
-            // Es más simple y no requiere librerías externas
-            generateQrCode(canvas, qr);
+        socket.on('qr', (qrCode) => {
+            statusDiv.innerText = "¡Escanea el QR ahora!";
+            qrContainer.innerHTML = '';
+            const img = new Image();
+            // Usamos una API pública rápida para generar la imagen del QR
+            img.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`;
+            qrContainer.appendChild(img);
         });
-
-        // Función para generar QR Code en un canvas
-        function generateQrCode(canvasElement, text) {
-            const ctx = canvasElement.getContext('2d');
-            const size = 256;
-            canvasElement.width = size;
-            canvasElement.height = size;
-            
-            // Usamos un truco simple: crear una imagen con una API pública
-            // y dibujarla en el canvas para evitar dependencias pesadas.
-            const qrImg = new Image();
-            qrImg.crossOrigin = "Anonymous";
-            qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(text)}`;
-            qrImg.onload = function() {
-                ctx.drawImage(qrImg, 0, 0);
-            };
-        }
     </script>
 </body>
 </html>
