@@ -11,12 +11,18 @@ const PORT = process.env.PORT || 3000;
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 
 app.use(express.json());
+app.use(express.static('public')); // Para servir archivos estáticos si los necesitas
 app.set('view engine', 'ejs');
 
 // --- VARIABLES DE ESTADO Y COLA ---
 let isClientReady = false;
-let messageQueue = []; // Aquí se guardarán los mensajes antes de salir
-let isProcessingQueue = false; // Semáforo para saber si estamos enviando
+let isClientConnected = false;
+let messageQueue = [];
+let isProcessingQueue = false;
+let clientInitialized = false;
+let lastQRTime = null;
+let qrRetryCount = 0;
+const MAX_QR_RETRIES = 3;
 
 // --- MIDDLEWARE DE SEGURIDAD ---
 const authMiddleware = (req, res, next) => {
@@ -30,14 +36,10 @@ const authMiddleware = (req, res, next) => {
 
 // --- CLIENTE WHATSAPP ---
 const client = new Client({
-    // Usamos el userAgent para parecer un navegador normal
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36',
-    
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({
-        // ¡IMPORTANTE! Cambié el nombre a 'sesion-v3-limpia'.
-        // Esto crea una carpeta nueva y evita el error de la sesión corrupta anterior.
-        clientId: "sesion-v3-limpia", 
-        dataPath: '/data'
+        clientId: "sesion-v4-stable",
+        dataPath: './data'
     }),
     puppeteer: {
         headless: true,
@@ -48,105 +50,218 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--single-process', // Importante para ahorrar memoria en Render
-            '--disable-gpu'
-        ]
-    }
+            '--single-process',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-extensions'
+        ],
+        timeout: 60000
+    },
+    qrMaxRetries: MAX_QR_RETRIES
 });
 
-// --- SISTEMA DE COLA (QUEUE) ---
-// Esta función procesa los mensajes uno por uno para no saturar la memoria
+// --- FUNCIÓN DE VALIDACIÓN DE NÚMERO ---
+const formatPhoneNumber = (numero) => {
+    let cleaned = numero.replace(/\D/g, '');
+    
+    if (!cleaned.startsWith('52') && cleaned.length === 10) {
+        cleaned = '52' + cleaned;
+    }
+    
+    return cleaned + '@c.us';
+};
+
+// --- SISTEMA DE COLA MEJORADO ---
 const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
+    
+    if (!isClientReady || !isClientConnected) {
+        console.log('⚠️ Cliente no está listo. Cola pausada. Total en cola:', messageQueue.length);
+        return;
+    }
 
     isProcessingQueue = true;
-    const item = messageQueue[0]; // Miramos el primer mensaje
+    const item = messageQueue[0];
 
     try {
-        console.log(`⏳ Procesando mensaje para: ${item.numero}...`);
+        console.log(`⏳ Procesando mensaje ${messageQueue.length} restantes`);
+        console.log(`   → Destinatario: ${item.numero}`);
         
-        // 1. Verificar si el usuario tiene WhatsApp (Soluciona error "No LID")
-        // Formateamos el número para asegurar que termine en @c.us correctamente para la búsqueda
-        const sanitizedNumber = item.numero.replace('@c.us', '') + '@c.us';
+        const formattedNumber = formatPhoneNumber(item.numero);
         
-        // Preguntamos a WhatsApp si existe este ID
-        const contact = await client.getNumberId(sanitizedNumber);
+        // Pausa antes de verificar
+        await new Promise(resolve => setTimeout(resolve, 13000));
+        
+        const numberId = await client.getNumberId(formattedNumber);
 
-        if (contact) {
-            // 2. Si existe, enviamos usando el ID serializado correcto
-            await client.sendMessage(contact._serialized, item.mensaje);
-            console.log(`✅ Enviado a ${item.numero}`);
+        if (numberId && numberId._serialized) {
+            await client.sendMessage(numberId._serialized, item.mensaje);
+            console.log(`✅ Mensaje enviado exitosamente`);
             item.resolve({ success: true, message: 'Enviado correctamente' });
         } else {
-            console.warn(`⚠️ El número ${item.numero} no está registrado en WhatsApp.`);
-            item.resolve({ success: false, error: 'El número no tiene WhatsApp registrado' });
+            console.warn(`⚠️ Número sin WhatsApp: ${item.numero}`);
+            item.resolve({ success: false, error: 'Número no registrado en WhatsApp' });
         }
 
     } catch (error) {
-        console.error(`❌ Error enviando a ${item.numero}:`, error.message);
-        // No fallamos la promesa, devolvemos success:false para que el cliente sepa
-        item.resolve({ success: false, error: error.message });
-    } finally {
-        // 3. Limpieza y retardo
-        messageQueue.shift(); // Sacamos el mensaje de la lista
+        console.error(`❌ Error al enviar:`, error.message);
         
-        // Esperamos 5 SEGUNDOS antes del siguiente mensaje.
-        // Esto es CRUCIAL para evitar que te bloqueen o se caiga el servidor.
+        if (error.message.includes('startComms') || 
+            error.message.includes('Evaluation failed') ||
+            error.message.includes('Protocol error')) {
+            
+            console.log('🔄 Error crítico detectado. Reiniciando cliente...');
+            isClientConnected = false;
+            isClientReady = false;
+            
+            // Notificar a todos los mensajes pendientes
+            messageQueue.forEach(msg => {
+                msg.resolve({ 
+                    success: false, 
+                    error: 'Cliente desconectado. Por favor reinicia el servicio.' 
+                });
+            });
+            messageQueue = [];
+            
+            item.resolve({ success: false, error: 'Cliente desconectado. Reiniciando...' });
+        } else {
+            item.resolve({ success: false, error: error.message });
+        }
+    } finally {
+        messageQueue.shift();
+        
+        // Pausa más larga entre mensajes (8 segundos)
+        const DELAY = 25000;
+        console.log(`⏸️ Esperando ${DELAY/1000}s antes del siguiente mensaje...`);
+        
         setTimeout(() => {
             isProcessingQueue = false;
-            processQueue(); // Llamamos recursivamente para el siguiente
-        }, 5000); 
+            processQueue();
+        }, DELAY);
     }
 };
 
 // --- EVENTOS DEL CLIENTE ---
 client.on('qr', (qr) => {
-    console.log('📸 Nuevo QR generado');
+    const now = Date.now();
+    
+    // Evitar spam de QRs
+    if (lastQRTime && (now - lastQRTime) < 10000) {
+        console.log('⏭️ QR generado muy rápido, ignorando...');
+        return;
+    }
+    
+    lastQRTime = now;
+    qrRetryCount++;
+    
+    console.log(`📸 QR generado (${qrRetryCount}/${MAX_QR_RETRIES})`);
     io.emit('qr', qr);
-    io.emit('status', 'Escanea el QR nuevo (Sesión reiniciada)');
-});
-
-client.on('ready', () => {
-    console.log('🚀 WhatsApp listo!');
-    isClientReady = true;
-    io.emit('status', '✅ WhatsApp Conectado y Listo');
+    io.emit('status', `Escanea el QR (intento ${qrRetryCount}/${MAX_QR_RETRIES})`);
+    
+    if (qrRetryCount >= MAX_QR_RETRIES) {
+        console.log('⚠️ Máximo de intentos QR alcanzado');
+        io.emit('status', 'Límite de intentos alcanzado. Reinicia el servicio.');
+    }
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Autenticado correctamente');
-    io.emit('status', 'Autenticado, cargando chats...');
+    console.log('🔑 Autenticación exitosa');
+    qrRetryCount = 0;
+    io.emit('status', 'Autenticado. Iniciando WhatsApp Web...');
+});
+
+client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ Cargando: ${percent}%`);
+    io.emit('status', `Cargando: ${percent}%`);
+});
+
+client.on('ready', async () => {
+    console.log('🚀 WhatsApp Web listo!');
+    console.log('⏱️ Esperando 45 segundos para estabilizar...');
+    
+    await new Promise(resolve => setTimeout(resolve, 45000));
+    
+    isClientReady = true;
+    isClientConnected = true;
+    
+    const info = client.info;
+    console.log(`✅ Conectado como: ${info.pushname || 'Usuario'}`);
+    console.log(`📱 Número: ${info.wid.user}`);
+    
+    io.emit('status', `✅ Listo - ${info.pushname || 'Bot Activo'}`);
+    io.emit('connected', { name: info.pushname, number: info.wid.user });
+    
+    if (messageQueue.length > 0) {
+        console.log(`📨 Procesando ${messageQueue.length} mensajes pendientes...`);
+        processQueue();
+    }
 });
 
 client.on('auth_failure', (msg) => {
-    console.error('❌ Fallo de autenticación', msg);
-    io.emit('status', 'Fallo de autenticación. Reiniciando...');
+    console.error('❌ Fallo de autenticación:', msg);
+    isClientReady = false;
+    isClientConnected = false;
+    io.emit('status', '❌ Error de autenticación. Vuelve a escanear el QR.');
 });
 
 client.on('disconnected', (reason) => {
     console.log('❌ Desconectado:', reason);
     isClientReady = false;
-    io.emit('status', '❌ Desconectado. El bot intentará reconectar...');
-    client.initialize();
+    isClientConnected = false;
+    io.emit('status', '❌ Desconectado. Reinicia el servicio manualmente.');
+    
+    // Limpiar mensajes pendientes
+    if (messageQueue.length > 0) {
+        console.log(`🗑️ Limpiando ${messageQueue.length} mensajes pendientes`);
+        messageQueue = [];
+    }
 });
 
-// Evento: Mensajes entrantes (opcional, para debug)
 client.on('message', async (msg) => {
-    if(msg.body === '!ping') {
-        msg.reply('pong');
+    if (msg.body === '!ping') {
+        msg.reply('pong - Bot activo ✅');
+    }
+    if (msg.body === '!info') {
+        msg.reply(`Cola: ${messageQueue.length} mensajes\nEstado: ${isClientReady ? 'Listo ✅' : 'No listo ❌'}`);
     }
 });
 
 // --- RUTAS API ---
-
 app.get('/', (req, res) => {
     res.render('index');
 });
 
-// Ruta para ver estado de la cola (Utilidad nueva)
-app.get('/cola', (req, res) => {
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'running',
+        whatsapp: {
+            ready: isClientReady,
+            connected: isClientConnected
+        },
+        queue: {
+            pending: messageQueue.length,
+            processing: isProcessingQueue
+        },
+        uptime: process.uptime()
+    });
+});
+
+app.get('/status', (req, res) => {
+    res.json({
+        ready: isClientReady,
+        connected: isClientConnected,
+        cola_pendiente: messageQueue.length,
+        procesando: isProcessingQueue
+    });
+});
+
+app.get('/cola', authMiddleware, (req, res) => {
     res.json({ 
         pendientes: messageQueue.length, 
-        procesando: isProcessingQueue 
+        procesando: isProcessingQueue,
+        cliente_listo: isClientReady,
+        cliente_conectado: isClientConnected,
+        lista_numeros: messageQueue.map(m => m.numero)
     });
 });
 
@@ -154,29 +269,93 @@ app.post('/enviar', authMiddleware, async (req, res) => {
     const { numero, mensaje } = req.body;
 
     if (!numero || !mensaje) {
-        return res.status(400).json({ success: false, error: 'Faltan datos' });
+        return res.status(400).json({ 
+            success: false, 
+            error: 'Faltan parámetros: numero y mensaje son requeridos' 
+        });
     }
 
-    if (!isClientReady) {
-        return res.status(503).json({ success: false, error: 'El bot no está listo todavía' });
+    if (!isClientReady || !isClientConnected) {
+        return res.status(503).json({ 
+            success: false, 
+            error: 'Bot no está listo. Escanea el QR o espera la conexión.',
+            ready: isClientReady,
+            connected: isClientConnected
+        });
     }
 
-    // EN LUGAR DE ENVIAR DE GOLPE, AGREGAMOS A LA COLA
-    // Creamos una promesa para responder al cliente HTTP cuando su turno pase
-    new Promise((resolve, reject) => {
-        messageQueue.push({ numero, mensaje, resolve, reject });
-        processQueue(); // Intentamos arrancar la cola si está parada
-    })
-    .then((resultado) => {
+    // Limitar cola a 100 mensajes
+    if (messageQueue.length >= 100) {
+        return res.status(429).json({
+            success: false,
+            error: 'Cola llena. Espera a que se procesen los mensajes pendientes.'
+        });
+    }
+
+    const promise = new Promise((resolve) => {
+        messageQueue.push({ numero, mensaje, resolve });
+        console.log(`📥 Nuevo mensaje en cola. Total: ${messageQueue.length}`);
+        processQueue();
+    });
+
+    try {
+        const resultado = await promise;
         res.json(resultado);
-    })
-    .catch((err) => {
+    } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/limpiar-cola', authMiddleware, (req, res) => {
+    const cantidadEliminada = messageQueue.length;
+    
+    // Resolver todas las promesas pendientes
+    messageQueue.forEach(msg => {
+        msg.resolve({ success: false, error: 'Cola limpiada manualmente' });
+    });
+    
+    messageQueue = [];
+    isProcessingQueue = false;
+    
+    console.log(`🗑️ Cola limpiada: ${cantidadEliminada} mensajes eliminados`);
+    
+    res.json({ 
+        success: true, 
+        mensaje: `Se eliminaron ${cantidadEliminada} mensajes de la cola` 
     });
 });
 
 // --- INICIO ---
-client.initialize();
+if (!clientInitialized) {
+    clientInitialized = true;
+    console.log('🔄 Inicializando cliente WhatsApp...');
+    console.log('📍 Usando sesión: sesion-v4-stable');
+    
+    client.initialize().catch(err => {
+        console.error('❌ Error crítico al inicializar:', err);
+        clientInitialized = false;
+        process.exit(1);
+    });
+}
+
+// Manejo de señales para cierre limpio
+process.on('SIGINT', async () => {
+    console.log('\n🛑 Cerrando servidor...');
+    await client.destroy();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    console.log('\n🛑 Señal SIGTERM recibida...');
+    await client.destroy();
+    process.exit(0);
+});
+
 server.listen(PORT, () => {
-    console.log(`Servidor corriendo en puerto ${PORT}`);
+    console.log('='.repeat(50));
+    console.log(`✅ Servidor WhatsApp Bot iniciado`);
+    console.log(`📡 Puerto: ${PORT}`);
+    console.log(`🔐 Auth: ${MI_TOKEN_SECRETO ? 'Configurado ✅' : 'NO CONFIGURADO ❌'}`);
+    console.log(`🌐 URL: http://localhost:${PORT}`);
+    console.log('='.repeat(50));
 });

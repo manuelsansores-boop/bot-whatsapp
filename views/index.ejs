@@ -3,23 +3,230 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Bot Monitor</title>
+    <title>WhatsApp Bot - Panel de Control</title>
     <style>
-        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f2f5; margin: 0; }
-        .card { background: white; padding: 2rem; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
-        h1 { color: #075e54; }
-        #status { margin: 1rem 0; font-weight: bold; color: #555; }
-        #qr-container { display: flex; justify-content: center; margin-top: 1rem; min-height: 260px; }
-        .loader { border: 5px solid #f3f3f3; border-top: 5px solid #075e54; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 500px;
+            width: 100%;
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .status-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #25D366;
+        }
+        
+        .status-text {
+            font-size: 16px;
+            color: #333;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .status-badge.connecting {
+            background: #ffc107;
+            color: #000;
+        }
+        
+        .status-badge.ready {
+            background: #25D366;
+            color: white;
+        }
+        
+        .status-badge.error {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .qr-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 280px;
+            background: white;
+            border-radius: 12px;
+            border: 2px dashed #ddd;
+            margin-bottom: 20px;
+        }
+        
+        .qr-container img {
+            max-width: 250px;
+            border-radius: 8px;
+        }
+        
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #25D366;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .success-icon {
+            font-size: 80px;
+            color: #25D366;
+            animation: scaleIn 0.5s ease-out;
+        }
+        
+        @keyframes scaleIn {
+            0% { transform: scale(0); }
+            50% { transform: scale(1.2); }
+            100% { transform: scale(1); }
+        }
+        
+        .info-box {
+            background: #e3f2fd;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            border-left: 4px solid #2196f3;
+        }
+        
+        .info-box h3 {
+            color: #1976d2;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .info-box ul {
+            list-style: none;
+            font-size: 13px;
+            color: #555;
+        }
+        
+        .info-box li {
+            padding: 5px 0;
+            padding-left: 20px;
+            position: relative;
+        }
+        
+        .info-box li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #25D366;
+            font-weight: bold;
+        }
+        
+        .connected-info {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 15px;
+            text-align: center;
+        }
+        
+        .connected-info .user-name {
+            font-size: 18px;
+            font-weight: bold;
+            color: #155724;
+            margin-bottom: 5px;
+        }
+        
+        .connected-info .user-number {
+            font-size: 14px;
+            color: #155724;
+            opacity: 0.8;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #777;
+            font-size: 12px;
+            border-top: 1px solid #eee;
+        }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h1>Bot WhatsApp</h1>
-        <div id="status">Conectando con el servidor...</div>
-        <div id="qr-container">
-            <div class="loader"></div>
+    <div class="container">
+        <div class="header">
+            <h1>📱 WhatsApp Bot</h1>
+            <p>Panel de Control y Monitoreo</p>
+        </div>
+        
+        <div class="content">
+            <div class="status-card">
+                <div class="status-text" id="status">
+                    Conectando con el servidor...
+                </div>
+                <span class="status-badge connecting" id="badge">Iniciando</span>
+            </div>
+            
+            <div class="qr-container" id="qr-container">
+                <div class="loader"></div>
+            </div>
+            
+            <div id="connected-info" style="display: none;"></div>
+            
+            <div class="info-box">
+                <h3>ℹ️ Información Importante</h3>
+                <ul>
+                    <li>Escanea el QR con WhatsApp</li>
+                    <li>No cierres esta ventana</li>
+                    <li>La sesión se guarda automáticamente</li>
+                    <li>Espera 30s después de conectar</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Bot WhatsApp v2.0 | Render Deploy
         </div>
     </div>
 
@@ -27,23 +234,68 @@
     <script>
         const socket = io();
         const statusDiv = document.getElementById('status');
+        const badgeDiv = document.getElementById('badge');
         const qrContainer = document.getElementById('qr-container');
+        const connectedInfo = document.getElementById('connected-info');
 
         socket.on('status', (msg) => {
             statusDiv.innerText = msg;
-            if(msg.includes('Listo') || msg.includes('Autenticado')) {
-                qrContainer.innerHTML = '<h2 style="font-size: 50px;">✅</h2>';
+            
+            // Actualizar badge según el estado
+            if (msg.includes('Listo') || msg.includes('✅')) {
+                badgeDiv.className = 'status-badge ready';
+                badgeDiv.innerText = 'Conectado';
+            } else if (msg.includes('Error') || msg.includes('❌')) {
+                badgeDiv.className = 'status-badge error';
+                badgeDiv.innerText = 'Error';
+            } else {
+                badgeDiv.className = 'status-badge connecting';
+                badgeDiv.innerText = 'Conectando';
+            }
+            
+            // Mostrar check si está listo
+            if (msg.includes('Listo') || msg.includes('Conectado y Listo')) {
+                qrContainer.innerHTML = '<div class="success-icon">✅</div>';
             }
         });
 
         socket.on('qr', (qrCode) => {
-            statusDiv.innerText = "¡Escanea el QR ahora!";
+            statusDiv.innerText = "📸 ¡Escanea el código QR ahora!";
+            badgeDiv.className = 'status-badge connecting';
+            badgeDiv.innerText = 'Esperando escaneo';
+            
             qrContainer.innerHTML = '';
             const img = new Image();
-            // Usamos una API pública rápida para generar la imagen del QR
             img.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`;
-            qrContainer.appendChild(img);
+            img.alt = 'Código QR de WhatsApp';
+            img.onload = () => {
+                qrContainer.appendChild(img);
+            };
+            img.onerror = () => {
+                qrContainer.innerHTML = '<p style="color: #dc3545;">Error al cargar QR</p>';
+            };
+            
+            connectedInfo.style.display = 'none';
         });
+
+        socket.on('connected', (data) => {
+            connectedInfo.style.display = 'block';
+            connectedInfo.className = 'connected-info';
+            connectedInfo.innerHTML = `
+                <div class="user-name">👤 ${data.name || 'Usuario'}</div>
+                <div class="user-number">📞 +${data.number}</div>
+            `;
+        });
+
+        // Verificar estado cada 30 segundos
+        setInterval(() => {
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                    console.log('Estado actual:', data);
+                })
+                .catch(err => console.error('Error al verificar estado:', err));
+        }, 30000);
     </script>
 </body>
 </html>
