@@ -95,6 +95,7 @@
             border-radius: 12px;
             border: 2px dashed #ddd;
             margin-bottom: 20px;
+            position: relative;
         }
         
         .qr-container img {
@@ -183,6 +184,33 @@
             color: #155724;
             opacity: 0.8;
         }
+
+        .debug-log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 10px;
+            margin-top: 15px;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+        }
+
+        .debug-log div {
+            padding: 2px 0;
+            color: #495057;
+        }
+
+        .debug-log .error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+
+        .debug-log .success {
+            color: #28a745;
+            font-weight: bold;
+        }
         
         .footer {
             text-align: center;
@@ -190,6 +218,26 @@
             color: #777;
             font-size: 12px;
             border-top: 1px solid #eee;
+        }
+
+        .connection-indicator {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #dc3545;
+        }
+
+        .connection-indicator.connected {
+            background: #28a745;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
     </style>
 </head>
@@ -202,8 +250,9 @@
         
         <div class="content">
             <div class="status-card">
+                <div class="connection-indicator" id="connectionIndicator"></div>
                 <div class="status-text" id="status">
-                    Conectando con el servidor...
+                    🔌 Conectando con el servidor...
                 </div>
                 <span class="status-badge connecting" id="badge">Iniciando</span>
             </div>
@@ -223,6 +272,10 @@
                     <li>Espera 30s después de conectar</li>
                 </ul>
             </div>
+
+            <div class="debug-log" id="debugLog">
+                <div class="success">🔍 Consola de debug:</div>
+            </div>
         </div>
         
         <div class="footer">
@@ -232,19 +285,69 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
+        // Variables globales
         const statusDiv = document.getElementById('status');
         const badgeDiv = document.getElementById('badge');
         const qrContainer = document.getElementById('qr-container');
         const connectedInfo = document.getElementById('connected-info');
+        const debugLog = document.getElementById('debugLog');
+        const connectionIndicator = document.getElementById('connectionIndicator');
 
+        // Función para agregar logs de debug
+        function addDebugLog(message, type = 'info') {
+            const logDiv = document.createElement('div');
+            logDiv.className = type;
+            logDiv.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            debugLog.appendChild(logDiv);
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+
+        addDebugLog('Iniciando conexión Socket.io...');
+
+        // Intentar conectar Socket.io
+        let socket;
+        try {
+            socket = io({
+                transports: ['websocket', 'polling'], // Probar ambos métodos
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionAttempts: 10
+            });
+            addDebugLog('Socket.io inicializado', 'success');
+        } catch (error) {
+            addDebugLog('Error al inicializar Socket.io: ' + error.message, 'error');
+        }
+
+        // Eventos de conexión
+        socket.on('connect', () => {
+            addDebugLog('✅ Conectado al servidor', 'success');
+            statusDiv.innerText = '✅ Conectado al servidor';
+            connectionIndicator.className = 'connection-indicator connected';
+        });
+
+        socket.on('disconnect', () => {
+            addDebugLog('❌ Desconectado del servidor', 'error');
+            statusDiv.innerText = '❌ Desconectado del servidor';
+            connectionIndicator.className = 'connection-indicator';
+            badgeDiv.className = 'status-badge error';
+            badgeDiv.innerText = 'Desconectado';
+        });
+
+        socket.on('connect_error', (error) => {
+            addDebugLog('Error de conexión: ' + error.message, 'error');
+            statusDiv.innerText = '❌ Error de conexión';
+        });
+
+        // Eventos personalizados
         socket.on('status', (msg) => {
+            addDebugLog('Status: ' + msg);
             statusDiv.innerText = msg;
             
             // Actualizar badge según el estado
             if (msg.includes('Listo') || msg.includes('✅')) {
                 badgeDiv.className = 'status-badge ready';
                 badgeDiv.innerText = 'Conectado';
+                addDebugLog('WhatsApp listo!', 'success');
             } else if (msg.includes('Error') || msg.includes('❌')) {
                 badgeDiv.className = 'status-badge error';
                 badgeDiv.innerText = 'Error';
@@ -256,29 +359,46 @@
             // Mostrar check si está listo
             if (msg.includes('Listo') || msg.includes('Conectado y Listo')) {
                 qrContainer.innerHTML = '<div class="success-icon">✅</div>';
+                addDebugLog('Bot completamente operativo', 'success');
             }
         });
 
         socket.on('qr', (qrCode) => {
+            addDebugLog('📸 QR recibido! Generando imagen...', 'success');
             statusDiv.innerText = "📸 ¡Escanea el código QR ahora!";
             badgeDiv.className = 'status-badge connecting';
             badgeDiv.innerText = 'Esperando escaneo';
             
-            qrContainer.innerHTML = '';
+            qrContainer.innerHTML = '<div class="loader"></div>';
+            
+            // Generar imagen del QR
             const img = new Image();
-            img.src = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`;
+            
+            addDebugLog('Cargando imagen QR desde API...');
+            
+            img.src = qrUrl;
             img.alt = 'Código QR de WhatsApp';
+            
             img.onload = () => {
+                qrContainer.innerHTML = '';
                 qrContainer.appendChild(img);
+                addDebugLog('✅ Imagen QR cargada correctamente', 'success');
             };
+            
             img.onerror = () => {
-                qrContainer.innerHTML = '<p style="color: #dc3545;">Error al cargar QR</p>';
+                qrContainer.innerHTML = '<p style="color: #dc3545; padding: 20px;">❌ Error al cargar QR. Revisa la consola.</p>';
+                addDebugLog('Error al cargar imagen QR', 'error');
+                
+                // Mostrar QR como texto alternativo
+                qrContainer.innerHTML += `<div style="font-size: 10px; word-break: break-all; padding: 10px;">${qrCode.substring(0, 100)}...</div>`;
             };
             
             connectedInfo.style.display = 'none';
         });
 
         socket.on('connected', (data) => {
+            addDebugLog(`Usuario conectado: ${data.name}`, 'success');
             connectedInfo.style.display = 'block';
             connectedInfo.className = 'connected-info';
             connectedInfo.innerHTML = `
@@ -293,9 +413,16 @@
                 .then(r => r.json())
                 .then(data => {
                     console.log('Estado actual:', data);
+                    addDebugLog(`Estado: Ready=${data.ready}, Connected=${data.connected}`);
                 })
-                .catch(err => console.error('Error al verificar estado:', err));
+                .catch(err => {
+                    console.error('Error al verificar estado:', err);
+                    addDebugLog('Error verificando estado', 'error');
+                });
         }, 30000);
+
+        // Log inicial
+        addDebugLog('Página cargada. Esperando eventos...');
     </script>
 </body>
 </html>
