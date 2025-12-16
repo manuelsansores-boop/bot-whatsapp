@@ -6,12 +6,17 @@ const { Server } = require("socket.io");
 // --- CONFIGURACIÓN ---
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    },
+    transports: ['websocket', 'polling']
+});
 const PORT = process.env.PORT || 3000;
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 
 app.use(express.json());
-app.use(express.static('public')); // Para servir archivos estáticos si los necesitas
 app.set('view engine', 'ejs');
 
 // --- VARIABLES DE ESTADO Y COLA ---
@@ -20,9 +25,10 @@ let isClientConnected = false;
 let messageQueue = [];
 let isProcessingQueue = false;
 let clientInitialized = false;
+let isInitializing = false; // 🔒 NUEVO: Bloqueo de inicialización
 let lastQRTime = null;
 let qrRetryCount = 0;
-const MAX_QR_RETRIES = 3;
+const MAX_QR_RETRIES = 5;
 
 // --- MIDDLEWARE DE SEGURIDAD ---
 const authMiddleware = (req, res, next) => {
@@ -38,7 +44,7 @@ const authMiddleware = (req, res, next) => {
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({
-        clientId: "sesion-v4-stable",
+        clientId: "sesion-v5-antibaneo", // 🆕 Nueva sesión limpia
         dataPath: './data'
     }),
     puppeteer: {
@@ -90,7 +96,7 @@ const processQueue = async () => {
         const formattedNumber = formatPhoneNumber(item.numero);
         
         // Pausa antes de verificar
-        await new Promise(resolve => setTimeout(resolve, 13000));
+        await new Promise(resolve => setTimeout(resolve, 3000));
         
         const numberId = await client.getNumberId(formattedNumber);
 
@@ -110,27 +116,27 @@ const processQueue = async () => {
             error.message.includes('Evaluation failed') ||
             error.message.includes('Protocol error')) {
             
-            console.log('🔄 Error crítico detectado. Reiniciando cliente...');
+            console.log('🔄 Error crítico detectado. Cliente debe reiniciarse manualmente.');
             isClientConnected = false;
             isClientReady = false;
             
-            // Notificar a todos los mensajes pendientes
+            // Rechazar todos los mensajes pendientes
             messageQueue.forEach(msg => {
                 msg.resolve({ 
                     success: false, 
-                    error: 'Cliente desconectado. Por favor reinicia el servicio.' 
+                    error: 'Cliente desconectado. Reinicia el servicio desde Render.' 
                 });
             });
             messageQueue = [];
             
-            item.resolve({ success: false, error: 'Cliente desconectado. Reiniciando...' });
+            item.resolve({ success: false, error: 'Cliente desconectado. Reinicia manualmente.' });
         } else {
             item.resolve({ success: false, error: error.message });
         }
     } finally {
         messageQueue.shift();
         
-        // Pausa más larga entre mensajes (8 segundos)
+        // 🔥 DELAY AUMENTADO: 25 segundos
         const DELAY = 25000;
         console.log(`⏸️ Esperando ${DELAY/1000}s antes del siguiente mensaje...`);
         
@@ -142,17 +148,25 @@ const processQueue = async () => {
 };
 
 // --- EVENTOS DEL CLIENTE ---
+let qrGenerated = false;
+
 client.on('qr', (qr) => {
+    if (qrGenerated) {
+        console.log('⏭️ QR ya fue generado, ignorando duplicado');
+        return;
+    }
+    
     const now = Date.now();
     
     // Evitar spam de QRs
-    if (lastQRTime && (now - lastQRTime) < 10000) {
+    if (lastQRTime && (now - lastQRTime) < 15000) {
         console.log('⏭️ QR generado muy rápido, ignorando...');
         return;
     }
     
     lastQRTime = now;
     qrRetryCount++;
+    qrGenerated = true;
     
     console.log(`📸 QR generado (${qrRetryCount}/${MAX_QR_RETRIES})`);
     io.emit('qr', qr);
@@ -160,22 +174,39 @@ client.on('qr', (qr) => {
     
     if (qrRetryCount >= MAX_QR_RETRIES) {
         console.log('⚠️ Máximo de intentos QR alcanzado');
-        io.emit('status', 'Límite de intentos alcanzado. Reinicia el servicio.');
+        io.emit('status', '⛔ Límite alcanzado. Reinicia el servicio manualmente.');
     }
+    
+    // Reset después de 60 segundos (para el siguiente QR)
+    setTimeout(() => {
+        qrGenerated = false;
+    }, 60000);
 });
 
 client.on('authenticated', () => {
     console.log('🔑 Autenticación exitosa');
     qrRetryCount = 0;
+    qrGenerated = false;
     io.emit('status', 'Autenticado. Iniciando WhatsApp Web...');
 });
 
 client.on('loading_screen', (percent, message) => {
-    console.log(`⏳ Cargando: ${percent}%`);
+    if (percent % 25 === 0) { // Solo mostrar cada 25%
+        console.log(`⏳ Cargando: ${percent}%`);
+    }
     io.emit('status', `Cargando: ${percent}%`);
 });
 
+// 🔒 IMPORTANTE: Solo un evento 'ready'
+let readyFired = false;
+
 client.on('ready', async () => {
+    if (readyFired) {
+        console.log('⚠️ Evento "ready" ya se ejecutó, ignorando duplicado');
+        return;
+    }
+    readyFired = true;
+    
     console.log('🚀 WhatsApp Web listo!');
     console.log('⏱️ Esperando 45 segundos para estabilizar...');
     
@@ -201,20 +232,31 @@ client.on('auth_failure', (msg) => {
     console.error('❌ Fallo de autenticación:', msg);
     isClientReady = false;
     isClientConnected = false;
-    io.emit('status', '❌ Error de autenticación. Vuelve a escanear el QR.');
+    readyFired = false;
+    qrGenerated = false;
+    io.emit('status', '❌ Error de autenticación. Reinicia el servicio.');
 });
 
+// 🔒 CRÍTICO: NO reiniciar automáticamente
 client.on('disconnected', (reason) => {
     console.log('❌ Desconectado:', reason);
     isClientReady = false;
     isClientConnected = false;
-    io.emit('status', '❌ Desconectado. Reinicia el servicio manualmente.');
+    readyFired = false;
+    qrGenerated = false;
+    io.emit('status', '❌ Desconectado. REINICIA MANUALMENTE desde Render.');
     
     // Limpiar mensajes pendientes
     if (messageQueue.length > 0) {
         console.log(`🗑️ Limpiando ${messageQueue.length} mensajes pendientes`);
+        messageQueue.forEach(msg => {
+            msg.resolve({ success: false, error: 'Desconectado. Reinicia el servicio.' });
+        });
         messageQueue = [];
     }
+    
+    // 🚫 NO REINICIAR: process.exit(1) forzará a Render a reiniciar el servicio
+    console.log('🛑 El servicio debe reiniciarse manualmente para evitar loops.');
 });
 
 client.on('message', async (msg) => {
@@ -236,7 +278,8 @@ app.get('/health', (req, res) => {
         status: 'running',
         whatsapp: {
             ready: isClientReady,
-            connected: isClientConnected
+            connected: isClientConnected,
+            initialized: clientInitialized
         },
         queue: {
             pending: messageQueue.length,
@@ -284,11 +327,11 @@ app.post('/enviar', authMiddleware, async (req, res) => {
         });
     }
 
-    // Limitar cola a 100 mensajes
-    if (messageQueue.length >= 100) {
+    // Limitar cola a 50 mensajes (más conservador)
+    if (messageQueue.length >= 50) {
         return res.status(429).json({
             success: false,
-            error: 'Cola llena. Espera a que se procesen los mensajes pendientes.'
+            error: 'Cola llena (50 mensajes). Espera a que se procesen.'
         });
     }
 
@@ -309,7 +352,6 @@ app.post('/enviar', authMiddleware, async (req, res) => {
 app.post('/limpiar-cola', authMiddleware, (req, res) => {
     const cantidadEliminada = messageQueue.length;
     
-    // Resolver todas las promesas pendientes
     messageQueue.forEach(msg => {
         msg.resolve({ success: false, error: 'Cola limpiada manualmente' });
     });
@@ -325,14 +367,22 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     });
 });
 
-// --- INICIO ---
-if (!clientInitialized) {
+// --- INICIO ÚNICO ---
+// 🔒 PROTECCIÓN contra múltiples inicializaciones
+if (!clientInitialized && !isInitializing) {
+    isInitializing = true;
     clientInitialized = true;
-    console.log('🔄 Inicializando cliente WhatsApp...');
-    console.log('📍 Usando sesión: sesion-v4-stable');
     
-    client.initialize().catch(err => {
+    console.log('🔄 Inicializando cliente WhatsApp...');
+    console.log('📍 Usando sesión: sesion-v5-antibaneo');
+    console.log('⚠️ IMPORTANTE: Si ves múltiples QRs, HAY UN PROBLEMA');
+    
+    client.initialize().then(() => {
+        isInitializing = false;
+        console.log('✅ Cliente inicializado correctamente');
+    }).catch(err => {
         console.error('❌ Error crítico al inicializar:', err);
+        isInitializing = false;
         clientInitialized = false;
         process.exit(1);
     });
@@ -351,11 +401,24 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
+// Evitar reinicios múltiples
+process.on('uncaughtException', (error) => {
+    console.error('❌ Excepción no capturada:', error);
+    console.log('🛑 El proceso se cerrará para evitar estado inconsistente');
+    process.exit(1);
+});
+
 server.listen(PORT, () => {
+    const isRender = !!process.env.RENDER;
+    const publicUrl = isRender 
+        ? (process.env.RENDER_EXTERNAL_URL || 'https://bot-whatsapp-4e4f.onrender.com')
+        : `http://localhost:${PORT}`;
+    
     console.log('='.repeat(50));
     console.log(`✅ Servidor WhatsApp Bot iniciado`);
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🔐 Auth: ${MI_TOKEN_SECRETO ? 'Configurado ✅' : 'NO CONFIGURADO ❌'}`);
-    console.log(`🌐 URL: http://localhost:${PORT}`);
+    console.log(`🌐 URL: ${publicUrl}`);
+    console.log(`📍 Entorno: ${isRender ? '☁️ Render' : '💻 Local'}`);
     console.log('='.repeat(50));
 });
