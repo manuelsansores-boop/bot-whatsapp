@@ -25,7 +25,7 @@ let isClientConnected = false;
 let messageQueue = [];
 let isProcessingQueue = false;
 let clientInitialized = false;
-let isInitializing = false; // 🔒 NUEVO: Bloqueo de inicialización
+let isInitializing = false; 
 let lastQRTime = null;
 let qrRetryCount = 0;
 const MAX_QR_RETRIES = 5;
@@ -44,7 +44,7 @@ const authMiddleware = (req, res, next) => {
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({
-        clientId: "sesion-v5-antibaneo", // 🆕 Nueva sesión limpia
+        clientId: "sesion-v5-antibaneo", 
         dataPath: './data'
     }),
     puppeteer: {
@@ -77,7 +77,12 @@ const formatPhoneNumber = (numero) => {
     return cleaned + '@c.us';
 };
 
-// --- SISTEMA DE COLA MEJORADO ---
+// --- HELPER: GENERADOR DE TIEMPO ALEATORIO ---
+const getRandomDelay = (min, max) => {
+    return Math.floor(Math.random() * (max - min + 1) + min);
+};
+
+// --- SISTEMA DE COLA MEJORADO (CON ALEATORIEDAD) ---
 const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     
@@ -95,8 +100,10 @@ const processQueue = async () => {
         
         const formattedNumber = formatPhoneNumber(item.numero);
         
-        // Pausa antes de verificar
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // 🎲 ALEATORIEDAD 1: Simular tiempo de "escribiendo" o búsqueda (2 a 6 segundos)
+        const typingDelay = getRandomDelay(2000, 6000);
+        console.log(`⌨️ Simulando actividad humana (${typingDelay}ms)...`);
+        await new Promise(resolve => setTimeout(resolve, typingDelay));
         
         const numberId = await client.getNumberId(formattedNumber);
 
@@ -136,14 +143,19 @@ const processQueue = async () => {
     } finally {
         messageQueue.shift();
         
-        // 🔥 DELAY AUMENTADO: 25 segundos
-        const DELAY = 75000;
-        console.log(`⏸️ Esperando ${DELAY/1000}s antes del siguiente mensaje...`);
+        // 🎲 ALEATORIEDAD 2: Tiempo de espera variable entre mensajes
+        // Mínimo: 60 segundos | Máximo: 100 segundos
+        const minTime = 60000;
+        const maxTime = 100000;
+        const randomWait = getRandomDelay(minTime, maxTime);
+        
+        console.log(`🎲 Intervalo aleatorio generado: ${Math.floor(randomWait/1000)}s`);
+        console.log(`⏸️ Esperando antes del siguiente mensaje...`);
         
         setTimeout(() => {
             isProcessingQueue = false;
             processQueue();
-        }, DELAY);
+        }, randomWait);
     }
 };
 
@@ -191,7 +203,7 @@ client.on('authenticated', () => {
 });
 
 client.on('loading_screen', (percent, message) => {
-    if (percent % 25 === 0) { // Solo mostrar cada 25%
+    if (percent % 25 === 0) { 
         console.log(`⏳ Cargando: ${percent}%`);
     }
     io.emit('status', `Cargando: ${percent}%`);
@@ -327,7 +339,7 @@ app.post('/enviar', authMiddleware, async (req, res) => {
         });
     }
 
-    // Limitar cola a 50 mensajes (más conservador)
+    // Limitar cola a 50 mensajes
     if (messageQueue.length >= 50) {
         return res.status(429).json({
             success: false,
@@ -368,14 +380,12 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
 });
 
 // --- INICIO ÚNICO ---
-// 🔒 PROTECCIÓN contra múltiples inicializaciones
 if (!clientInitialized && !isInitializing) {
     isInitializing = true;
     clientInitialized = true;
     
     console.log('🔄 Inicializando cliente WhatsApp...');
     console.log('📍 Usando sesión: sesion-v5-antibaneo');
-    console.log('⚠️ IMPORTANTE: Si ves múltiples QRs, HAY UN PROBLEMA');
     
     client.initialize().then(() => {
         isInitializing = false;
@@ -401,17 +411,15 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-// Evitar reinicios múltiples
 process.on('uncaughtException', (error) => {
     console.error('❌ Excepción no capturada:', error);
-    console.log('🛑 El proceso se cerrará para evitar estado inconsistente');
     process.exit(1);
 });
 
 server.listen(PORT, () => {
     const isRender = !!process.env.RENDER;
     const publicUrl = isRender 
-        ? (process.env.RENDER_EXTERNAL_URL || 'https://bot-whatsapp-4e4f.onrender.com')
+        ? (process.env.RENDER_EXTERNAL_URL || 'https://bot-whatsapp.onrender.com')
         : `http://localhost:${PORT}`;
     
     console.log('='.repeat(50));
