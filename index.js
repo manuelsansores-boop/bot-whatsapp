@@ -40,6 +40,29 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
+// --- CONFIGURACIÓN DE PUPPETEER PARA RENDER ---
+const puppeteerConfig = {
+    headless: true,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions'
+    ],
+    timeout: 60000
+};
+
+// Solo agregar executablePath si estamos en Render
+if (process.env.RENDER) {
+    puppeteerConfig.executablePath = '/usr/bin/chromium-browser';
+}
+
 // --- CLIENTE WHATSAPP ---
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -47,22 +70,7 @@ const client = new Client({
         clientId: "sesion-v5-antibaneo", 
         dataPath: './data'
     }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-extensions'
-        ],
-        timeout: 60000
-    },
+    puppeteer: puppeteerConfig,
     qrMaxRetries: MAX_QR_RETRIES
 });
 
@@ -196,7 +204,7 @@ client.on('qr', (qr) => {
 });
 
 client.on('authenticated', () => {
-    console.log('🔑 Autenticación exitosa');
+    console.log('🔐 Autenticación exitosa');
     qrRetryCount = 0;
     qrGenerated = false;
     io.emit('status', 'Autenticado. Iniciando WhatsApp Web...');
@@ -386,6 +394,7 @@ if (!clientInitialized && !isInitializing) {
     
     console.log('🔄 Inicializando cliente WhatsApp...');
     console.log('📍 Usando sesión: sesion-v5-antibaneo');
+    console.log('🌍 Entorno:', process.env.RENDER ? 'Render' : 'Local');
     
     client.initialize().then(() => {
         isInitializing = false;
