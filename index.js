@@ -58,10 +58,8 @@ const puppeteerConfig = {
     timeout: 60000
 };
 
-// Solo agregar executablePath si estamos en Render
-if (process.env.RENDER) {
-    puppeteerConfig.executablePath = '/usr/bin/chromium-browser';
-}
+// NOTA: Se eliminó el bloque que definía 'executablePath' manualmente.
+// Puppeteer v23+ en Render descargará y usará su propio Chrome automáticamente.
 
 // --- CLIENTE WHATSAPP ---
 const client = new Client({
