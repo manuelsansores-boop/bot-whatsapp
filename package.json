@@ -4,14 +4,16 @@
   "description": "Bot con sistema de cola y antibloqueo",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "express": "^4.18.2",
     "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
     "socket.io": "^4.7.2",
     "ejs": "^3.1.9",
-    "qrcode": "^1.5.3"
+    "qrcode": "^1.5.3",
+    "puppeteer": "^23.0.0"
   },
   "engines": {
     "node": ">=18"
