@@ -58,8 +58,8 @@ const puppeteerConfig = {
     timeout: 60000
 };
 
-// NOTA: Se eliminó el bloque que definía 'executablePath' manualmente.
-// Puppeteer v23+ en Render descargará y usará su propio Chrome automáticamente.
+// NOTA: Se eliminó la configuración manual de executablePath.
+// Esto permite que Puppeteer use su propia versión de Chrome compatible con Render.
 
 // --- CLIENTE WHATSAPP ---
 const client = new Client({
@@ -278,6 +278,9 @@ client.on('disconnected', (reason) => {
 });
 
 client.on('message', async (msg) => {
+    // --- ESTA ES LA LÍNEA NUEVA PARA LEER MENSAJES EN LOGS ---
+    console.log(`📩 Mensaje de ${msg.from}: ${msg.body}`);
+
     if (msg.body === '!ping') {
         msg.reply('pong - Bot activo ✅');
     }
