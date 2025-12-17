@@ -137,7 +137,7 @@ const processQueue = async () => {
         messageQueue.shift();
         
         // 🔥 DELAY AUMENTADO: 25 segundos
-        const DELAY = 25000;
+        const DELAY = 75000;
         console.log(`⏸️ Esperando ${DELAY/1000}s antes del siguiente mensaje...`);
         
         setTimeout(() => {
