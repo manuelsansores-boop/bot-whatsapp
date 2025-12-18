@@ -2,6 +2,8 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
+const fs = require('fs');
+const path = require('path');
 
 // --- CONFIGURACIÓN ---
 const app = express();
@@ -103,7 +105,7 @@ const processQueue = async () => {
         
         const formattedNumber = formatPhoneNumber(item.numero);
         
-        // 🎲 ALEATORIEDAD 1: Simular tiempo de "escribiendo" o búsqueda (2 a 6 segundos)
+        // 🎲 ALEATORIEDAD 1: Simular tiempo de "escribiendo" (2 a 6 segundos)
         const typingDelay = getRandomDelay(2000, 6000);
         console.log(`⌨️ Simulando actividad humana (${typingDelay}ms)...`);
         await new Promise(resolve => setTimeout(resolve, typingDelay));
@@ -134,7 +136,7 @@ const processQueue = async () => {
             messageQueue.forEach(msg => {
                 msg.resolve({ 
                     success: false, 
-                    error: 'Cliente desconectado. Reinicia el servicio desde Render.' 
+                    error: 'Cliente desconectado. Reinicia el servicio desde el Panel.' 
                 });
             });
             messageQueue = [];
@@ -173,7 +175,7 @@ client.on('qr', (qr) => {
     
     const now = Date.now();
     
-    // Evitar spam de QRs
+    // Evitar spam de QRs (15 segundos)
     if (lastQRTime && (now - lastQRTime) < 15000) {
         console.log('⏭️ QR generado muy rápido, ignorando...');
         return;
@@ -192,7 +194,7 @@ client.on('qr', (qr) => {
         io.emit('status', '⛔ Límite alcanzado. Reinicia el servicio manualmente.');
     }
     
-    // Reset después de 60 segundos (para el siguiente QR)
+    // Reset después de 60 segundos
     setTimeout(() => {
         qrGenerated = false;
     }, 60000);
@@ -249,16 +251,17 @@ client.on('auth_failure', (msg) => {
     isClientConnected = false;
     readyFired = false;
     qrGenerated = false;
-    io.emit('status', '❌ Error de autenticación. Reinicia el servicio.');
+    io.emit('status', '❌ Error de autenticación. Usa Borrar Sesión.');
 });
 
-// 🔒 CRÍTICO: NO reiniciar automáticamente
+// 🔒 CRÍTICO: NO reiniciar automáticamente el proceso
 client.on('disconnected', (reason) => {
     console.log('❌ Desconectado:', reason);
     isClientReady = false;
     isClientConnected = false;
     readyFired = false;
     qrGenerated = false;
+    
     io.emit('status', '❌ Desconectado. REINICIA MANUALMENTE desde el Panel.');
     
     // Limpiar mensajes pendientes
@@ -271,7 +274,6 @@ client.on('disconnected', (reason) => {
     }
     
     console.log('🛑 Cliente desconectado. Esperando comando manual de inicio.');
-    // NOTA: NO HACEMOS process.exit() para mantener el servidor web vivo.
 });
 
 client.on('message', async (msg) => {
@@ -384,9 +386,9 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     });
 });
 
-// --- NUEVAS RUTAS DE CONTROL MANUAL ---
+// --- RUTAS DE CONTROL MANUAL ---
 
-// 1. Ruta para ENCENDER el bot manualmente
+// 1. ENCENDER BOT
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     if (clientInitialized && isInitializing) {
          return res.json({ success: false, message: 'El bot ya se está iniciando.' });
@@ -400,11 +402,10 @@ app.post('/iniciar-bot', authMiddleware, async (req, res) => {
         isInitializing = true;
         clientInitialized = true;
         
-        // Re-inicializar variables críticas
         qrGenerated = false;
         qrRetryCount = 0;
         
-        // Importante: No esperar el await aquí para no bloquear la respuesta HTTP
+        // No esperamos el await para no bloquear la respuesta HTTP
         client.initialize().catch(err => {
              console.error('❌ Error asíncrono al inicializar:', err);
              isInitializing = false;
@@ -421,7 +422,7 @@ app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     }
 });
 
-// 2. Ruta para APAGAR el bot manualmente
+// 2. APAGAR BOT
 app.post('/detener-bot', authMiddleware, async (req, res) => {
     try {
         console.log('🔴 COMANDO RECIBIDO: Deteniendo cliente manualmente...');
@@ -445,6 +446,38 @@ app.post('/detener-bot', authMiddleware, async (req, res) => {
     }
 });
 
+// 3. BORRAR SESIÓN (Hard Reset)
+app.post('/reset-session', authMiddleware, async (req, res) => {
+    try {
+        console.log('☢️ COMANDO RECIBIDO: Borrando sesión del disco...');
+        
+        // 1. Asegurar que el cliente esté apagado
+        if (clientInitialized) {
+            await client.destroy();
+            clientInitialized = false;
+            isClientReady = false;
+            isClientConnected = false;
+        }
+
+        // 2. Borrar la carpeta de sesión
+        const sessionPath = path.join(__dirname, 'data');
+        
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            console.log('🗑️ Carpeta de sesión eliminada correctamente.');
+            res.json({ success: true, message: 'Sesión borrada. Ahora tendrás que escanear QR nuevo.' });
+        } else {
+            console.log('ℹ️ No había sesión guardada para borrar.');
+            res.json({ success: true, message: 'El disco ya estaba limpio.' });
+        }
+        
+        io.emit('status', '🗑️ Sesión eliminada. Dale a Iniciar para escanear QR nuevo.');
+
+    } catch (error) {
+        console.error('❌ Error al borrar sesión:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 // Manejo de señales para cierre limpio
 process.on('SIGINT', async () => {
@@ -461,7 +494,6 @@ process.on('SIGTERM', async () => {
 
 process.on('uncaughtException', (error) => {
     console.error('❌ Excepción no capturada:', error);
-    // No salimos del proceso para mantener el servidor web vivo si es posible
 });
 
 server.listen(PORT, () => {
@@ -471,7 +503,7 @@ server.listen(PORT, () => {
         : `http://localhost:${PORT}`;
     
     console.log('='.repeat(50));
-    console.log(`✅ Servidor Web iniciado (ESPERANDO COMANDO DE INICIO)`);
+    console.log(`✅ Servidor Web iniciado (MODO SEGURO - ESPERANDO INICIO MANUAL)`);
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🔐 Auth: ${MI_TOKEN_SECRETO ? 'Configurado ✅' : 'NO CONFIGURADO ❌'}`);
     console.log(`🌐 URL: ${publicUrl}`);
