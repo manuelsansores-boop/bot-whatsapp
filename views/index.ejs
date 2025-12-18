@@ -71,21 +71,45 @@
             text-transform: uppercase;
         }
         
-        .status-badge.connecting {
-            background: #ffc107;
-            color: #000;
+        .status-badge.connecting { background: #ffc107; color: #000; }
+        .status-badge.ready { background: #25D366; color: white; }
+        .status-badge.error { background: #dc3545; color: white; }
+        
+        /* NUEVO: ESTILOS PARA EL PANEL DE CONTROL */
+        .control-panel {
+            display: grid; 
+            grid-template-columns: 1fr 1fr; 
+            gap: 10px; 
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f1f3f5;
+            border-radius: 12px;
+            border: 1px solid #dee2e6;
+        }
+
+        .btn-control {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 14px;
+            transition: opacity 0.2s;
+        }
+        .btn-control:active { opacity: 0.8; }
+
+        .token-input-container {
+            margin-bottom: 15px;
         }
         
-        .status-badge.ready {
-            background: #25D366;
-            color: white;
+        .token-input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 14px;
         }
-        
-        .status-badge.error {
-            background: #dc3545;
-            color: white;
-        }
-        
+
         .qr-container {
             display: flex;
             justify-content: center;
@@ -98,10 +122,7 @@
             position: relative;
         }
         
-        .qr-container img {
-            max-width: 250px;
-            border-radius: 8px;
-        }
+        .qr-container img { max-width: 250px; border-radius: 8px; }
         
         .loader {
             border: 5px solid #f3f3f3;
@@ -172,18 +193,8 @@
             text-align: center;
         }
         
-        .connected-info .user-name {
-            font-size: 18px;
-            font-weight: bold;
-            color: #155724;
-            margin-bottom: 5px;
-        }
-        
-        .connected-info .user-number {
-            font-size: 14px;
-            color: #155724;
-            opacity: 0.8;
-        }
+        .connected-info .user-name { font-size: 18px; font-weight: bold; color: #155724; margin-bottom: 5px; }
+        .connected-info .user-number { font-size: 14px; color: #155724; opacity: 0.8; }
 
         .debug-log {
             background: #f8f9fa;
@@ -197,20 +208,9 @@
             font-size: 11px;
         }
 
-        .debug-log div {
-            padding: 2px 0;
-            color: #495057;
-        }
-
-        .debug-log .error {
-            color: #dc3545;
-            font-weight: bold;
-        }
-
-        .debug-log .success {
-            color: #28a745;
-            font-weight: bold;
-        }
+        .debug-log div { padding: 2px 0; color: #495057; }
+        .debug-log .error { color: #dc3545; font-weight: bold; }
+        .debug-log .success { color: #28a745; font-weight: bold; }
         
         .footer {
             text-align: center;
@@ -256,7 +256,24 @@
                 </div>
                 <span class="status-badge connecting" id="badge">Iniciando</span>
             </div>
-            
+
+            <div class="token-input-container">
+                <input type="password" id="authToken" class="token-input" placeholder="Ingresa tu AUTH_TOKEN aquí para usar los botones">
+            </div>
+
+            <div class="control-panel">
+                <button class="btn-control" onclick="controlBot('iniciar-bot')" style="background: #28a745; color: white;">
+                    ▶ ENCENDER BOT
+                </button>
+                
+                <button class="btn-control" onclick="controlBot('detener-bot')" style="background: #dc3545; color: white;">
+                    ⏹ APAGAR BOT
+                </button>
+                
+                <button class="btn-control" onclick="limpiarCola()" style="background: #ffc107; color: black; grid-column: span 2;">
+                    🗑️ VACIAR COLA DE MENSAJES
+                </button>
+            </div>
             <div class="qr-container" id="qr-container">
                 <div class="loader"></div>
             </div>
@@ -279,7 +296,7 @@
         </div>
         
         <div class="footer">
-            Bot WhatsApp v2.0 | Render Deploy
+            Bot WhatsApp v2.1 | Render Deploy (Modo Manual)
         </div>
     </div>
 
@@ -292,6 +309,7 @@
         const connectedInfo = document.getElementById('connected-info');
         const debugLog = document.getElementById('debugLog');
         const connectionIndicator = document.getElementById('connectionIndicator');
+        const tokenInput = document.getElementById('authToken');
 
         // Función para agregar logs de debug
         function addDebugLog(message, type = 'info') {
@@ -302,13 +320,48 @@
             debugLog.scrollTop = debugLog.scrollHeight;
         }
 
-        addDebugLog('Iniciando conexión Socket.io...');
+        // --- FUNCIONES DE CONTROL MANUAL ---
+        async function controlBot(accion) {
+            const token = tokenInput.value.trim();
+            if (!token) {
+                alert('Por favor ingresa el AUTH_TOKEN en el campo de texto arriba de los botones.');
+                return;
+            }
 
+            addDebugLog(`Enviando comando: ${accion}...`);
+            try {
+                const res = await fetch(`/${accion}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({}) // Cuerpo vacío
+                });
+                
+                const data = await res.json();
+                if(data.success) {
+                    addDebugLog(`✅ Comando exitoso: ${data.message}`, 'success');
+                } else {
+                    addDebugLog(`❌ Error: ${data.error || data.message}`, 'error');
+                }
+            } catch (e) {
+                addDebugLog(`❌ Error de red: ${e.message}`, 'error');
+            }
+        }
+
+        async function limpiarCola() {
+            if(!confirm('¿Seguro que quieres borrar todos los mensajes pendientes de la cola?')) return;
+            controlBot('limpiar-cola');
+        }
+
+        addDebugLog('Iniciando conexión Socket.io...');
+        
         // Intentar conectar Socket.io
         let socket;
         try {
             socket = io({
-                transports: ['websocket', 'polling'], // Probar ambos métodos
+                transports: ['websocket', 'polling'],
                 reconnection: true,
                 reconnectionDelay: 1000,
                 reconnectionAttempts: 10
@@ -321,7 +374,7 @@
         // Eventos de conexión
         socket.on('connect', () => {
             addDebugLog('✅ Conectado al servidor', 'success');
-            statusDiv.innerText = '✅ Conectado al servidor';
+            statusDiv.innerText = '✅ Conectado al servidor (Bot puede estar detenido)';
             connectionIndicator.className = 'connection-indicator connected';
         });
 
@@ -343,20 +396,18 @@
             addDebugLog('Status: ' + msg);
             statusDiv.innerText = msg;
             
-            // Actualizar badge según el estado
             if (msg.includes('Listo') || msg.includes('✅')) {
                 badgeDiv.className = 'status-badge ready';
                 badgeDiv.innerText = 'Conectado';
                 addDebugLog('WhatsApp listo!', 'success');
-            } else if (msg.includes('Error') || msg.includes('❌')) {
+            } else if (msg.includes('Error') || msg.includes('❌') || msg.includes('detenido')) {
                 badgeDiv.className = 'status-badge error';
-                badgeDiv.innerText = 'Error';
+                badgeDiv.innerText = 'Detenido/Error';
             } else {
                 badgeDiv.className = 'status-badge connecting';
-                badgeDiv.innerText = 'Conectando';
+                badgeDiv.innerText = 'Procesando';
             }
             
-            // Mostrar check si está listo
             if (msg.includes('Listo') || msg.includes('Conectado y Listo')) {
                 qrContainer.innerHTML = '<div class="success-icon">✅</div>';
                 addDebugLog('Bot completamente operativo', 'success');
@@ -371,7 +422,6 @@
             
             qrContainer.innerHTML = '<div class="loader"></div>';
             
-            // Generar imagen del QR
             const img = new Image();
             const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`;
             
@@ -387,11 +437,8 @@
             };
             
             img.onerror = () => {
-                qrContainer.innerHTML = '<p style="color: #dc3545; padding: 20px;">❌ Error al cargar QR. Revisa la consola.</p>';
+                qrContainer.innerHTML = '<p style="color: #dc3545; padding: 20px;">❌ Error al cargar QR.</p>';
                 addDebugLog('Error al cargar imagen QR', 'error');
-                
-                // Mostrar QR como texto alternativo
-                qrContainer.innerHTML += `<div style="font-size: 10px; word-break: break-all; padding: 10px;">${qrCode.substring(0, 100)}...</div>`;
             };
             
             connectedInfo.style.display = 'none';
@@ -413,16 +460,17 @@
                 .then(r => r.json())
                 .then(data => {
                     console.log('Estado actual:', data);
-                    addDebugLog(`Estado: Ready=${data.ready}, Connected=${data.connected}`);
+                    // Solo loguear si hay cambios o errores para no saturar
+                    if(!data.ready) {
+                         addDebugLog(`Monitor: Bot NO listo. (Cola: ${data.cola_pendiente})`);
+                    }
                 })
                 .catch(err => {
                     console.error('Error al verificar estado:', err);
-                    addDebugLog('Error verificando estado', 'error');
                 });
         }, 30000);
 
-        // Log inicial
-        addDebugLog('Página cargada. Esperando eventos...');
+        addDebugLog('Página cargada. Ingresa TOKEN y presiona ENCENDER.');
     </script>
 </body>
 </html>

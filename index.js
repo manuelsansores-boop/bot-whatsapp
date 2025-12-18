@@ -58,9 +58,6 @@ const puppeteerConfig = {
     timeout: 60000
 };
 
-// NOTA: Se eliminó la configuración manual de executablePath.
-// Esto permite que Puppeteer use su propia versión de Chrome compatible con Render.
-
 // --- CLIENTE WHATSAPP ---
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -262,7 +259,7 @@ client.on('disconnected', (reason) => {
     isClientConnected = false;
     readyFired = false;
     qrGenerated = false;
-    io.emit('status', '❌ Desconectado. REINICIA MANUALMENTE desde Render.');
+    io.emit('status', '❌ Desconectado. REINICIA MANUALMENTE desde el Panel.');
     
     // Limpiar mensajes pendientes
     if (messageQueue.length > 0) {
@@ -273,12 +270,11 @@ client.on('disconnected', (reason) => {
         messageQueue = [];
     }
     
-    // 🚫 NO REINICIAR: process.exit(1) forzará a Render a reiniciar el servicio
-    console.log('🛑 El servicio debe reiniciarse manualmente para evitar loops.');
+    console.log('🛑 Cliente desconectado. Esperando comando manual de inicio.');
+    // NOTA: NO HACEMOS process.exit() para mantener el servidor web vivo.
 });
 
 client.on('message', async (msg) => {
-    // --- ESTA ES LA LÍNEA NUEVA PARA LEER MENSAJES EN LOGS ---
     console.log(`📩 Mensaje de ${msg.from}: ${msg.body}`);
 
     if (msg.body === '!ping') {
@@ -342,7 +338,7 @@ app.post('/enviar', authMiddleware, async (req, res) => {
     if (!isClientReady || !isClientConnected) {
         return res.status(503).json({ 
             success: false, 
-            error: 'Bot no está listo. Escanea el QR o espera la conexión.',
+            error: 'Bot no está listo. Inícialo desde el panel de control.',
             ready: isClientReady,
             connected: isClientConnected
         });
@@ -388,42 +384,84 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     });
 });
 
-// --- INICIO ÚNICO ---
-if (!clientInitialized && !isInitializing) {
-    isInitializing = true;
-    clientInitialized = true;
+// --- NUEVAS RUTAS DE CONTROL MANUAL ---
+
+// 1. Ruta para ENCENDER el bot manualmente
+app.post('/iniciar-bot', authMiddleware, async (req, res) => {
+    if (clientInitialized && isInitializing) {
+         return res.json({ success: false, message: 'El bot ya se está iniciando.' });
+    }
+    if (isClientReady) {
+        return res.json({ success: true, message: 'El bot ya está listo y conectado.' });
+    }
     
-    console.log('🔄 Inicializando cliente WhatsApp...');
-    console.log('📍 Usando sesión: sesion-v5-antibaneo');
-    console.log('🌍 Entorno:', process.env.RENDER ? 'Render' : 'Local');
-    
-    client.initialize().then(() => {
-        isInitializing = false;
-        console.log('✅ Cliente inicializado correctamente');
-    }).catch(err => {
-        console.error('❌ Error crítico al inicializar:', err);
+    try {
+        console.log('🟢 COMANDO RECIBIDO: Iniciando cliente manualmente...');
+        isInitializing = true;
+        clientInitialized = true;
+        
+        // Re-inicializar variables críticas
+        qrGenerated = false;
+        qrRetryCount = 0;
+        
+        // Importante: No esperar el await aquí para no bloquear la respuesta HTTP
+        client.initialize().catch(err => {
+             console.error('❌ Error asíncrono al inicializar:', err);
+             isInitializing = false;
+             clientInitialized = false;
+        });
+
+        res.json({ success: true, message: 'Iniciando sistema... Observa el panel.' });
+        
+    } catch (error) {
+        console.error('❌ Error al iniciar:', error);
         isInitializing = false;
         clientInitialized = false;
-        process.exit(1);
-    });
-}
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 2. Ruta para APAGAR el bot manualmente
+app.post('/detener-bot', authMiddleware, async (req, res) => {
+    try {
+        console.log('🔴 COMANDO RECIBIDO: Deteniendo cliente manualmente...');
+        await client.destroy();
+        
+        // Resetear estados
+        isClientReady = false;
+        isClientConnected = false;
+        clientInitialized = false;
+        isInitializing = false;
+        readyFired = false;
+        qrGenerated = false;
+        
+        io.emit('status', '⛔ Bot detenido manualmente. Pulsa Iniciar.');
+        io.emit('disconnected', 'Bot detenido');
+        
+        res.json({ success: true, message: 'Bot detenido correctamente' });
+    } catch (error) {
+        console.error('❌ Error al detener:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 
 // Manejo de señales para cierre limpio
 process.on('SIGINT', async () => {
     console.log('\n🛑 Cerrando servidor...');
-    await client.destroy();
+    try { await client.destroy(); } catch(e) {}
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     console.log('\n🛑 Señal SIGTERM recibida...');
-    await client.destroy();
+    try { await client.destroy(); } catch(e) {}
     process.exit(0);
 });
 
 process.on('uncaughtException', (error) => {
     console.error('❌ Excepción no capturada:', error);
-    process.exit(1);
+    // No salimos del proceso para mantener el servidor web vivo si es posible
 });
 
 server.listen(PORT, () => {
@@ -433,7 +471,7 @@ server.listen(PORT, () => {
         : `http://localhost:${PORT}`;
     
     console.log('='.repeat(50));
-    console.log(`✅ Servidor WhatsApp Bot iniciado`);
+    console.log(`✅ Servidor Web iniciado (ESPERANDO COMANDO DE INICIO)`);
     console.log(`📡 Puerto: ${PORT}`);
     console.log(`🔐 Auth: ${MI_TOKEN_SECRETO ? 'Configurado ✅' : 'NO CONFIGURADO ❌'}`);
     console.log(`🌐 URL: ${publicUrl}`);
