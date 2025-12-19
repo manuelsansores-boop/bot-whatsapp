@@ -210,21 +210,33 @@ app.post('/reset-session', authMiddleware, async (req, res) => {
     }
 });
 
+// BUSCA ESTA PARTE EN TU index.js Y REEMPLÁZALA COMPLETAMENTE
+
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje } = req.body;
     
-    // Si el bot está apagado, RECHAZAR mensaje
+    // 1. Validaciones rápidas
     if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
-    
-    // Validación de 10 dígitos
     if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
     
-    // Validación de horario
+    // 2. Check de horario
     const office = checkOfficeHours();
     if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada' });
 
-    messageQueue.push({ numero, mensaje, resolve: (d) => res.json(d) });
-    console.log(`📥 Mensaje recibido. Cola: ${messageQueue.length}`);
+    // 🔥 CAMBIO CLAVE: RESPONDER "OK" INMEDIATAMENTE
+    // No esperamos a que WhatsApp termine. Le decimos a Lambda "Ya lo tengo, adiós".
+    // Esto evita que tu Lambda de Python se quede colgada esperando y reintente.
+    res.json({ success: true, message: 'Mensaje encolado. Se enviará en breve.', status: 'queued' });
+
+    // 3. Encolar el mensaje para proceso en segundo plano
+    messageQueue.push({ 
+        numero, 
+        mensaje, 
+        // Pasamos una función vacía porque ya respondimos arriba con res.json
+        resolve: (resultado) => { console.log(`[Reporte] Mensaje a ${numero}: ${resultado.success ? 'Enviado' : 'Falló'}`); }
+    });
+
+    console.log(`📥 Mensaje recibido y liberado. Cola: ${messageQueue.length}`);
     processQueue();
 });
 
