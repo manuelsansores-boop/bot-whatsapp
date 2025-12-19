@@ -199,13 +199,29 @@ app.post('/detener-bot', authMiddleware, async (req, res) => {
 
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje } = req.body;
-    
-    // Check rápido antes de encolar
-    if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
-    
-    const office = checkOfficeHours();
-    if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada (6 PM)' });
 
+    // 🔒 1. CANDADO DE SEGURIDAD (NUEVO)
+    // Si tú no le has dado a "ENCENDER" en el panel, RECHAZA la petición.
+    // Así evitas que se llene la cola mientras duermes.
+    if (!isClientReady) {
+        return res.status(503).json({ 
+            success: false, 
+            error: '⛔ EL BOT ESTÁ APAGADO. Enciéndelo primero desde el panel.' 
+        });
+    }
+
+    // 2. Tu filtro de longitud (Tu idea de los 10 dígitos)
+    if (!numero || numero.length < 10) {
+        return res.status(400).json({ error: 'Número inválido o muy corto' });
+    }
+    
+    // 3. Check de Horario
+    const office = checkOfficeHours();
+    if (office.hour >= 18) {
+        return res.status(400).json({ error: 'Oficina cerrada (6 PM)' });
+    }
+
+    // Si pasa los filtros, recién ahí entra a la cola
     messageQueue.push({ numero, mensaje, resolve: (d) => res.json(d) });
     console.log(`📥 Mensaje recibido. Cola: ${messageQueue.length}`);
     processQueue();
