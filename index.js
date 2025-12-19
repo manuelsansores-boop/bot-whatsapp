@@ -114,20 +114,38 @@ const processQueue = async () => {
         const isRegistered = await client.isRegisteredUser(finalNumber);
 
         if (isRegistered) {
-            // ▼▼▼ AQUÍ ESTÁ LA LÓGICA DE FOTO MODIFICADA ▼▼▼
+            
+            // ▼▼▼ AQUÍ ESTÁ LA LÓGICA DE FOTO CORREGIDA PARA DEBUGGING ▼▼▼
             if (item.mediaUrl) {
                 try {
-                    console.log("📸 Detectada URL de imagen, descargando...");
-                    // Descargamos la imagen (unsafeMime ayuda con algunos tipos de archivo de S3)
-                    const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                    console.log("📸 Detectada URL de imagen. Intentando descargar...");
+                    console.log(`🔗 LINK S3: ${item.mediaUrl}`); // Para que veas el link en el log
+
+                    // TRUCO: Usamos headers de User-Agent para que S3 no nos bloquee
+                    const media = await MessageMedia.fromUrl(item.mediaUrl, { 
+                        unsafeMime: true,
+                        reqOptions: {
+                            headers: { 
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                            }
+                        }
+                    });
+
+                    // Verificación extra
+                    if (!media || !media.data) throw new Error("La imagen se descargó vacía o corrupta.");
                     
                     // Enviamos imagen con el texto como Caption
                     await client.sendMessage(finalNumber, media, { caption: item.mensaje });
                     console.log(`✅ FOTO ENVIADA a ${item.numero}`);
+
                 } catch (imgError) {
-                    console.error("⚠️ Error con la imagen, enviando solo texto:", imgError.message);
-                    // RESPALDO: Si falla la imagen, enviamos el texto para no perder la notificación
-                    await client.sendMessage(finalNumber, item.mensaje + "\n\n(Imagen no disponible)");
+                    // IMPRIMIMOS EL ERROR COMPLETO
+                    console.error("⚠️ ERROR CON LA IMAGEN:");
+                    console.error(imgError); 
+
+                    // RESPALDO: Enviamos texto + link para no perder la info
+                    await client.sendMessage(finalNumber, item.mensaje + `\n\n(No se pudo cargar la vista previa, ver imagen aquí: ${item.mediaUrl})`);
+                    console.log("✅ Texto de respaldo enviado.");
                 }
             } else {
                 // CASO NORMAL (SOLO TEXTO)
@@ -143,11 +161,11 @@ const processQueue = async () => {
             item.resolve({ success: false, error: 'Número no registrado' });
         }
     } catch (error) {
-        console.error('❌ Error:', error.message);
-        item.resolve({ success: false, error: error.message });
+        console.error('❌ Error general:', error); // Log completo del error
+        item.resolve({ success: false, error: error.message || 'Error desconocido' });
         
         // KILL SWITCH: Si hay ban o error grave, matamos el proceso
-        if(error.message.includes('Protocol') || error.message.includes('destroyed')) {
+        if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) {
             console.log('💀 Error crítico. Reiniciando...');
             process.exit(1); 
         }
