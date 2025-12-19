@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js'); // <--- 1. AGREGADO MessageMedia
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -34,7 +34,7 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// CONFIGURACIÓN PUPPETEER BLINDADA PARA RENDER
+// CONFIGURACIÓN PUPPETEER BLINDADA PARA RENDER (INTACTA)
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
@@ -97,7 +97,7 @@ const processQueue = async () => {
     const item = messageQueue[0];
 
     try {
-        // FILTRO DE NÚMERO (TU REGLA)
+        // FILTRO DE NÚMERO
         let cleanNumber = item.numero.replace(/\D/g, '');
         const esLongitudValida = (cleanNumber.length === 10) || (cleanNumber.length === 12 && cleanNumber.startsWith('52')) || (cleanNumber.length === 13 && cleanNumber.startsWith('521'));
         
@@ -114,8 +114,28 @@ const processQueue = async () => {
         const isRegistered = await client.isRegisteredUser(finalNumber);
 
         if (isRegistered) {
-            await client.sendMessage(finalNumber, item.mensaje);
-            console.log(`✅ ENVIADO a ${item.numero}`);
+            // ▼▼▼ AQUÍ ESTÁ LA LÓGICA DE FOTO MODIFICADA ▼▼▼
+            if (item.mediaUrl) {
+                try {
+                    console.log("📸 Detectada URL de imagen, descargando...");
+                    // Descargamos la imagen (unsafeMime ayuda con algunos tipos de archivo de S3)
+                    const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                    
+                    // Enviamos imagen con el texto como Caption
+                    await client.sendMessage(finalNumber, media, { caption: item.mensaje });
+                    console.log(`✅ FOTO ENVIADA a ${item.numero}`);
+                } catch (imgError) {
+                    console.error("⚠️ Error con la imagen, enviando solo texto:", imgError.message);
+                    // RESPALDO: Si falla la imagen, enviamos el texto para no perder la notificación
+                    await client.sendMessage(finalNumber, item.mensaje + "\n\n(Imagen no disponible)");
+                }
+            } else {
+                // CASO NORMAL (SOLO TEXTO)
+                await client.sendMessage(finalNumber, item.mensaje);
+                console.log(`✅ TEXTO ENVIADO a ${item.numero}`);
+            }
+            // ▲▲▲ FIN LÓGICA DE FOTO ▲▲▲
+
             item.resolve({ success: true });
             mensajesEnRacha++; 
         } else {
@@ -133,6 +153,7 @@ const processQueue = async () => {
         }
     } finally {
         messageQueue.shift(); 
+        // Tu pausa de seguridad original (respetada)
         const shortPause = getRandomDelay(60000, 90000); 
         console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
         setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
@@ -210,10 +231,9 @@ app.post('/reset-session', authMiddleware, async (req, res) => {
     }
 });
 
-// BUSCA ESTA PARTE EN TU index.js Y REEMPLÁZALA COMPLETAMENTE
-
+// 2. CAMBIO EN LA RUTA ENVIAR: Aceptar media_url
 app.post('/enviar', authMiddleware, (req, res) => {
-    const { numero, mensaje } = req.body;
+    const { numero, mensaje, media_url } = req.body; // <--- Agregamos media_url
     
     // 1. Validaciones rápidas
     if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
@@ -223,16 +243,15 @@ app.post('/enviar', authMiddleware, (req, res) => {
     const office = checkOfficeHours();
     if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada' });
 
-    // 🔥 CAMBIO CLAVE: RESPONDER "OK" INMEDIATAMENTE
-    // No esperamos a que WhatsApp termine. Le decimos a Lambda "Ya lo tengo, adiós".
-    // Esto evita que tu Lambda de Python se quede colgada esperando y reintente.
+    // 🔥 RESPUESTA INMEDIATA (INTACTA)
+    // Esto es vital para tu Lambda, no lo toqué.
     res.json({ success: true, message: 'Mensaje encolado. Se enviará en breve.', status: 'queued' });
 
-    // 3. Encolar el mensaje para proceso en segundo plano
+    // 3. Encolar el mensaje
     messageQueue.push({ 
         numero, 
         mensaje, 
-        // Pasamos una función vacía porque ya respondimos arriba con res.json
+        mediaUrl: media_url, // <--- Guardamos la URL para procesarla después
         resolve: (resultado) => { console.log(`[Reporte] Mensaje a ${numero}: ${resultado.success ? 'Enviado' : 'Falló'}`); }
     });
 
