@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-render-bot",
-  "version": "2.0.0",
-  "description": "Bot con sistema de cola y antibloqueo",
+  "version": "3.0.0",
+  "description": "Bot Seguro: Horario Oficina + Pausas Largas + Kill Switch",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -12,7 +12,8 @@
     "socket.io": "^4.7.2",
     "ejs": "^3.1.9",
     "qrcode": "^1.5.3",
-    "puppeteer": "^23.0.0"
+    "puppeteer": "^23.0.0",
+    "moment-timezone": "^0.5.43"
   },
   "engines": {
     "node": ">=18"

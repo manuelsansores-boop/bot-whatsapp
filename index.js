@@ -4,15 +4,13 @@ const http = require('http');
 const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
+const moment = require('moment-timezone'); // RECUERDA: npm install moment-timezone
 
 // --- CONFIGURACIÓN ---
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    },
+    cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket', 'polling']
 });
 const PORT = process.env.PORT || 3000;
@@ -21,78 +19,80 @@ const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// --- VARIABLES DE ESTADO Y COLA ---
+// --- ESTADO DEL SISTEMA ---
 let isClientReady = false;
-let isClientConnected = false;
 let messageQueue = [];
 let isProcessingQueue = false;
-let clientInitialized = false;
-let isInitializing = false; 
-let lastQRTime = null;
-let qrRetryCount = 0;
-const MAX_QR_RETRIES = 5;
 
-// --- MIDDLEWARE DE SEGURIDAD ---
+// VARIABLES ANTI-BANEO (Lotes)
+let mensajesEnRacha = 0;
+let limiteRachaActual = 5; 
+
+// --- MIDDLEWARE ---
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    if (!MI_TOKEN_SECRETO) return res.status(500).json({ error: 'Configura AUTH_TOKEN en Render' });
-    if (token !== MI_TOKEN_SECRETO) return res.status(403).json({ error: 'Token inválido' });
+    if (!MI_TOKEN_SECRETO || token !== MI_TOKEN_SECRETO) return res.status(403).json({ error: 'Acceso denegado' });
     next();
 };
 
-// --- CONFIGURACIÓN DE PUPPETEER PARA RENDER ---
-const puppeteerConfig = {
-    headless: true,
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-extensions'
-    ],
-    timeout: 60000
-};
-
-// --- CLIENTE WHATSAPP ---
+// --- CONFIGURACIÓN PUPPETEER ---
 const client = new Client({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    authStrategy: new LocalAuth({
-        clientId: "sesion-v5-antibaneo", 
-        dataPath: './data'
-    }),
-    puppeteer: puppeteerConfig,
-    qrMaxRetries: MAX_QR_RETRIES
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    authStrategy: new LocalAuth({ clientId: "client-safe-v3", dataPath: './data' }),
+    puppeteer: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    },
+    qrMaxRetries: 2
 });
 
-// --- FUNCIÓN DE VALIDACIÓN DE NÚMERO ---
-const formatPhoneNumber = (numero) => {
-    let cleaned = numero.replace(/\D/g, '');
-    
-    if (!cleaned.startsWith('52') && cleaned.length === 10) {
-        cleaned = '52' + cleaned;
-    }
-    
-    return cleaned + '@c.us';
+// --- UTILIDADES ---
+const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
+
+// 🛡️ [SEGURIDAD] CHECK DE HORARIO (MÉXICO)
+const checkOfficeHours = () => {
+    const now = moment().tz("America/Mexico_City");
+    const hour = now.hour(); 
+    return {
+        isOpen: hour >= 8 && hour < 18, // Abierto de 8:00 AM a 5:59 PM
+        hour: hour,
+        timeString: now.format('HH:mm')
+    };
 };
 
-// --- HELPER: GENERADOR DE TIEMPO ALEATORIO ---
-const getRandomDelay = (min, max) => {
-    return Math.floor(Math.random() * (max - min + 1) + min);
-};
-
-// --- SISTEMA DE COLA MEJORADO (CON ALEATORIEDAD) ---
+// --- PROCESADOR MAESTRO ---
 const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
-    
-    if (!isClientReady || !isClientConnected) {
-        console.log('⚠️ Cliente no está listo. Cola pausada. Total en cola:', messageQueue.length);
+    if (!isClientReady) return; // Si no está listo, no hacemos nada
+
+    // 1. REVISIÓN DE HORARIO
+    const officeStatus = checkOfficeHours();
+    if (!officeStatus.isOpen) {
+        if (officeStatus.hour >= 18) {
+             console.log('🌙 CERRADO (Más de las 6 PM). Borrando cola.');
+             messageQueue = []; // Vaciamos cola
+             io.emit('status', '🌙 Oficina Cerrada. Cola vaciada.');
+        } else {
+             console.log('zzz Muy temprano. Reintentando en 10 min.');
+             setTimeout(processQueue, 600000); 
+        }
+        return;
+    }
+
+    // 2. REVISIÓN DE RACHA (DESCANSOS LARGOS)
+    if (mensajesEnRacha >= limiteRachaActual) {
+        const minutosPausa = getRandomDelay(10, 20); 
+        console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
+        io.emit('status', `☕ Descanso de seguridad (${minutosPausa} min)`);
+        
+        mensajesEnRacha = 0;
+        limiteRachaActual = getRandomDelay(3, 7); // Próxima racha aleatoria
+        
+        setTimeout(() => {
+            console.log('⚡ Volviendo al trabajo...');
+            processQueue();
+        }, minutosPausa * 60 * 1000);
         return;
     }
 
@@ -100,413 +100,126 @@ const processQueue = async () => {
     const item = messageQueue[0];
 
     try {
-        console.log(`⏳ Procesando mensaje ${messageQueue.length} restantes`);
-        console.log(`   → Destinatario: ${item.numero}`);
-        
-        const formattedNumber = formatPhoneNumber(item.numero);
-        
-        // 🎲 ALEATORIEDAD 1: Simular tiempo de "escribiendo" (2 a 6 segundos)
-        const typingDelay = getRandomDelay(2000, 6000);
-        console.log(`⌨️ Simulando actividad humana (${typingDelay}ms)...`);
-        await new Promise(resolve => setTimeout(resolve, typingDelay));
-        
-        const numberId = await client.getNumberId(formattedNumber);
+        // --- AQUÍ ESTÁ TU NUEVA REGLA DE LONGITUD ---
+        // Limpiamos el número (quitamos guiones, espacios, paréntesis)
+        let cleanNumber = item.numero.replace(/\D/g, '');
 
-        if (numberId && numberId._serialized) {
-            await client.sendMessage(numberId._serialized, item.mensaje);
-            console.log(`✅ Mensaje enviado exitosamente`);
-            item.resolve({ success: true, message: 'Enviado correctamente' });
+        // 🛡️ REGLA: Si no tiene 10 dígitos (ej: 5512345678) 
+        // ni 12 dígitos empezando por 52 (ej: 5215512345678), LO DESCARTAMOS.
+        const esLongitudValida = (cleanNumber.length === 10) || (cleanNumber.length === 12 && cleanNumber.startsWith('52')) || (cleanNumber.length === 13 && cleanNumber.startsWith('521'));
+        
+        if (!esLongitudValida) {
+            console.log(`🚫 NÚMERO IGNORADO (Formato inválido): ${item.numero}`);
+            throw new Error('Formato inválido (debe ser 10 dígitos MX)');
+        }
+
+        // Formatear correctamente para WhatsApp (agregar 52 si falta)
+        if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
+        const finalNumber = cleanNumber + '@c.us';
+
+        console.log(`⏳ Procesando ${item.numero}...`);
+
+        // 3. TIEMPO DE "ESCRIBIENDO" (HUMANIZACIÓN)
+        const typingDelay = getRandomDelay(4000, 8000); // 4 a 8 segundos
+        await new Promise(r => setTimeout(r, typingDelay));
+
+        // 4. VERIFICAR SI EXISTE EN WHATSAPP (LID CHECK)
+        // Esto evita enviar mensajes a números fijos o inexistentes
+        const isRegistered = await client.isRegisteredUser(finalNumber);
+
+        if (isRegistered) {
+            await client.sendMessage(finalNumber, item.mensaje);
+            console.log(`✅ ENVIADO a ${item.numero}`);
+            item.resolve({ success: true });
+            mensajesEnRacha++; 
         } else {
-            console.warn(`⚠️ Número sin WhatsApp: ${item.numero}`);
-            item.resolve({ success: false, error: 'Número no registrado en WhatsApp' });
+            console.log(`⚠️ NO TIENE WHATSAPP: ${item.numero}`);
+            item.resolve({ success: false, error: 'Número no registrado' });
         }
 
     } catch (error) {
-        console.error(`❌ Error al enviar:`, error.message);
-        
-        if (error.message.includes('startComms') || 
-            error.message.includes('Evaluation failed') ||
-            error.message.includes('Protocol error')) {
-            
-            console.log('🔄 Error crítico detectado. Cliente debe reiniciarse manualmente.');
-            isClientConnected = false;
-            isClientReady = false;
-            
-            // Rechazar todos los mensajes pendientes
-            messageQueue.forEach(msg => {
-                msg.resolve({ 
-                    success: false, 
-                    error: 'Cliente desconectado. Reinicia el servicio desde el Panel.' 
-                });
-            });
-            messageQueue = [];
-            
-            item.resolve({ success: false, error: 'Cliente desconectado. Reinicia manualmente.' });
-        } else {
-            item.resolve({ success: false, error: error.message });
+        console.error('❌ Error:', error.message);
+        item.resolve({ success: false, error: error.message });
+
+        // SI HAY ERROR CRÍTICO (BANEO O DESCONEXIÓN), MATAR EL PROCESO
+        if(error.message.includes('Protocol') || error.message.includes('destroyed')) {
+            process.exit(1); 
         }
     } finally {
-        messageQueue.shift();
+        messageQueue.shift(); // Sacar de la cola
         
-        // 🎲 ALEATORIEDAD 2: Tiempo de espera variable entre mensajes
-        // Mínimo: 60 segundos | Máximo: 100 segundos
-        const minTime = 60000;
-        const maxTime = 100000;
-        const randomWait = getRandomDelay(minTime, maxTime);
-        
-        console.log(`🎲 Intervalo aleatorio generado: ${Math.floor(randomWait/1000)}s`);
-        console.log(`⏸️ Esperando antes del siguiente mensaje...`);
+        // 5. PAUSA ENTRE MENSAJES (MÍNIMO 1 MINUTO)
+        const shortPause = getRandomDelay(60000, 90000); 
+        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
         
         setTimeout(() => {
             isProcessingQueue = false;
             processQueue();
-        }, randomWait);
+        }, shortPause);
     }
 };
 
 // --- EVENTOS DEL CLIENTE ---
-let qrGenerated = false;
 
 client.on('qr', (qr) => {
-    if (qrGenerated) {
-        console.log('⏭️ QR ya fue generado, ignorando duplicado');
-        return;
-    }
-    
-    const now = Date.now();
-    
-    // Evitar spam de QRs (15 segundos)
-    if (lastQRTime && (now - lastQRTime) < 15000) {
-        console.log('⏭️ QR generado muy rápido, ignorando...');
-        return;
-    }
-    
-    lastQRTime = now;
-    qrRetryCount++;
-    qrGenerated = true;
-    
-    console.log(`📸 QR generado (${qrRetryCount}/${MAX_QR_RETRIES})`);
+    console.log('📸 NUEVO QR GENERADO');
     io.emit('qr', qr);
-    io.emit('status', `Escanea el QR (intento ${qrRetryCount}/${MAX_QR_RETRIES})`);
-    
-    if (qrRetryCount >= MAX_QR_RETRIES) {
-        console.log('⚠️ Máximo de intentos QR alcanzado');
-        io.emit('status', '⛔ Límite alcanzado. Reinicia el servicio manualmente.');
-    }
-    
-    // Reset después de 60 segundos
-    setTimeout(() => {
-        qrGenerated = false;
-    }, 60000);
+    io.emit('status', '📸 ESCANEA EL QR AHORA');
 });
 
-client.on('authenticated', () => {
-    console.log('🔐 Autenticación exitosa');
-    qrRetryCount = 0;
-    qrGenerated = false;
-    io.emit('status', 'Autenticado. Iniciando WhatsApp Web...');
-});
-
-client.on('loading_screen', (percent, message) => {
-    if (percent % 25 === 0) { 
-        console.log(`⏳ Cargando: ${percent}%`);
-    }
-    io.emit('status', `Cargando: ${percent}%`);
-});
-
-// 🔒 IMPORTANTE: Solo un evento 'ready'
-let readyFired = false;
-
-client.on('ready', async () => {
-    if (readyFired) {
-        console.log('⚠️ Evento "ready" ya se ejecutó, ignorando duplicado');
-        return;
-    }
-    readyFired = true;
-    
-    console.log('🚀 WhatsApp Web listo!');
-    console.log('⏱️ Esperando 45 segundos para estabilizar...');
-    
-    await new Promise(resolve => setTimeout(resolve, 45000));
-    
+client.on('ready', () => {
+    console.log('🚀 CONEXIÓN EXITOSA');
     isClientReady = true;
-    isClientConnected = true;
-    
-    const info = client.info;
-    console.log(`✅ Conectado como: ${info.pushname || 'Usuario'}`);
-    console.log(`📱 Número: ${info.wid.user}`);
-    
-    io.emit('status', `✅ Listo - ${info.pushname || 'Bot Activo'}`);
-    io.emit('connected', { name: info.pushname, number: info.wid.user });
-    
-    if (messageQueue.length > 0) {
-        console.log(`📨 Procesando ${messageQueue.length} mensajes pendientes...`);
-        processQueue();
-    }
+    io.emit('status', '✅ BOT ACTIVO (Modo Seguro)');
+    io.emit('connected', { name: client.info.pushname, number: client.info.wid.user });
+    processQueue(); // Arrancar cola si hay pendientes
 });
 
-client.on('auth_failure', (msg) => {
-    console.error('❌ Fallo de autenticación:', msg);
-    isClientReady = false;
-    isClientConnected = false;
-    readyFired = false;
-    qrGenerated = false;
-    io.emit('status', '❌ Error de autenticación. Usa Borrar Sesión.');
-});
-
-// 🔒 CRÍTICO: NO reiniciar automáticamente el proceso
+// SI SE DESCONECTA, SE MUERE EL PROCESO (PARA EVITAR BUCLES ZOMBIES)
 client.on('disconnected', (reason) => {
-    console.log('❌ Desconectado:', reason);
-    isClientReady = false;
-    isClientConnected = false;
-    readyFired = false;
-    qrGenerated = false;
-    
-    io.emit('status', '❌ Desconectado. REINICIA MANUALMENTE desde el Panel.');
-    
-    // Limpiar mensajes pendientes
-    if (messageQueue.length > 0) {
-        console.log(`🗑️ Limpiando ${messageQueue.length} mensajes pendientes`);
-        messageQueue.forEach(msg => {
-            msg.resolve({ success: false, error: 'Desconectado. Reinicia el servicio.' });
-        });
-        messageQueue = [];
-    }
-    
-    console.log('🛑 Cliente desconectado. Esperando comando manual de inicio.');
+    console.log(`💀 DESCONEXIÓN DETECTADA: ${reason}`);
+    io.emit('status', '❌ Desconectado. Reiniciando servidor...');
+    process.exit(0); // Muerte súbita para reinicio limpio
 });
 
-client.on('message', async (msg) => {
-    console.log(`📩 Mensaje de ${msg.from}: ${msg.body}`);
+// --- API DE CONTROL ---
 
-    if (msg.body === '!ping') {
-        msg.reply('pong - Bot activo ✅');
-    }
-    if (msg.body === '!info') {
-        msg.reply(`Cola: ${messageQueue.length} mensajes\nEstado: ${isClientReady ? 'Listo ✅' : 'No listo ❌'}`);
-    }
+app.post('/iniciar-bot', authMiddleware, async (req, res) => {
+    if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
+    console.log('🟢 Iniciando motor...');
+    client.initialize().catch(e => process.exit(1)); // Si falla al arrancar, reiniciar
+    res.json({ success: true, message: 'Iniciando...' });
 });
 
-// --- RUTAS API ---
-app.get('/', (req, res) => {
-    res.render('index');
+app.post('/detener-bot', authMiddleware, async (req, res) => {
+    console.log('🔴 Deteniendo motor...');
+    try { await client.destroy(); } catch(e) {}
+    process.exit(0); // Apagado total
 });
 
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'running',
-        whatsapp: {
-            ready: isClientReady,
-            connected: isClientConnected,
-            initialized: clientInitialized
-        },
-        queue: {
-            pending: messageQueue.length,
-            processing: isProcessingQueue
-        },
-        uptime: process.uptime()
-    });
-});
-
-app.get('/status', (req, res) => {
-    res.json({
-        ready: isClientReady,
-        connected: isClientConnected,
-        cola_pendiente: messageQueue.length,
-        procesando: isProcessingQueue
-    });
-});
-
-app.get('/cola', authMiddleware, (req, res) => {
-    res.json({ 
-        pendientes: messageQueue.length, 
-        procesando: isProcessingQueue,
-        cliente_listo: isClientReady,
-        cliente_conectado: isClientConnected,
-        lista_numeros: messageQueue.map(m => m.numero)
-    });
-});
-
-app.post('/enviar', authMiddleware, async (req, res) => {
+app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje } = req.body;
+    
+    // Check rápido antes de encolar
+    if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
+    
+    const office = checkOfficeHours();
+    if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada (6 PM)' });
 
-    if (!numero || !mensaje) {
-        return res.status(400).json({ 
-            success: false, 
-            error: 'Faltan parámetros: numero y mensaje son requeridos' 
-        });
-    }
-
-    if (!isClientReady || !isClientConnected) {
-        return res.status(503).json({ 
-            success: false, 
-            error: 'Bot no está listo. Inícialo desde el panel de control.',
-            ready: isClientReady,
-            connected: isClientConnected
-        });
-    }
-
-    // Limitar cola a 50 mensajes
-    if (messageQueue.length >= 50) {
-        return res.status(429).json({
-            success: false,
-            error: 'Cola llena (50 mensajes). Espera a que se procesen.'
-        });
-    }
-
-    const promise = new Promise((resolve) => {
-        messageQueue.push({ numero, mensaje, resolve });
-        console.log(`📥 Nuevo mensaje en cola. Total: ${messageQueue.length}`);
-        processQueue();
-    });
-
-    try {
-        const resultado = await promise;
-        res.json(resultado);
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
+    messageQueue.push({ numero, mensaje, resolve: (d) => res.json(d) });
+    console.log(`📥 Mensaje recibido. Cola: ${messageQueue.length}`);
+    processQueue();
 });
 
 app.post('/limpiar-cola', authMiddleware, (req, res) => {
-    const cantidadEliminada = messageQueue.length;
-    
-    messageQueue.forEach(msg => {
-        msg.resolve({ success: false, error: 'Cola limpiada manualmente' });
-    });
-    
     messageQueue = [];
-    isProcessingQueue = false;
-    
-    console.log(`🗑️ Cola limpiada: ${cantidadEliminada} mensajes eliminados`);
-    
-    res.json({ 
-        success: true, 
-        mensaje: `Se eliminaron ${cantidadEliminada} mensajes de la cola` 
-    });
+    res.json({ success: true });
 });
 
-// --- RUTAS DE CONTROL MANUAL ---
-
-// 1. ENCENDER BOT
-app.post('/iniciar-bot', authMiddleware, async (req, res) => {
-    if (clientInitialized && isInitializing) {
-         return res.json({ success: false, message: 'El bot ya se está iniciando.' });
-    }
-    if (isClientReady) {
-        return res.json({ success: true, message: 'El bot ya está listo y conectado.' });
-    }
-    
-    try {
-        console.log('🟢 COMANDO RECIBIDO: Iniciando cliente manualmente...');
-        isInitializing = true;
-        clientInitialized = true;
-        
-        qrGenerated = false;
-        qrRetryCount = 0;
-        
-        // No esperamos el await para no bloquear la respuesta HTTP
-        client.initialize().catch(err => {
-             console.error('❌ Error asíncrono al inicializar:', err);
-             isInitializing = false;
-             clientInitialized = false;
-        });
-
-        res.json({ success: true, message: 'Iniciando sistema... Observa el panel.' });
-        
-    } catch (error) {
-        console.error('❌ Error al iniciar:', error);
-        isInitializing = false;
-        clientInitialized = false;
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// 2. APAGAR BOT
-app.post('/detener-bot', authMiddleware, async (req, res) => {
-    try {
-        console.log('🔴 COMANDO RECIBIDO: Deteniendo cliente manualmente...');
-        await client.destroy();
-        
-        // Resetear estados
-        isClientReady = false;
-        isClientConnected = false;
-        clientInitialized = false;
-        isInitializing = false;
-        readyFired = false;
-        qrGenerated = false;
-        
-        io.emit('status', '⛔ Bot detenido manualmente. Pulsa Iniciar.');
-        io.emit('disconnected', 'Bot detenido');
-        
-        res.json({ success: true, message: 'Bot detenido correctamente' });
-    } catch (error) {
-        console.error('❌ Error al detener:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// 3. BORRAR SESIÓN (Hard Reset)
-app.post('/reset-session', authMiddleware, async (req, res) => {
-    try {
-        console.log('☢️ COMANDO RECIBIDO: Borrando sesión del disco...');
-        
-        // 1. Asegurar que el cliente esté apagado
-        if (clientInitialized) {
-            await client.destroy();
-            clientInitialized = false;
-            isClientReady = false;
-            isClientConnected = false;
-        }
-
-        // 2. Borrar la carpeta de sesión
-        const sessionPath = path.join(__dirname, 'data');
-        
-        if (fs.existsSync(sessionPath)) {
-            fs.rmSync(sessionPath, { recursive: true, force: true });
-            console.log('🗑️ Carpeta de sesión eliminada correctamente.');
-            res.json({ success: true, message: 'Sesión borrada. Ahora tendrás que escanear QR nuevo.' });
-        } else {
-            console.log('ℹ️ No había sesión guardada para borrar.');
-            res.json({ success: true, message: 'El disco ya estaba limpio.' });
-        }
-        
-        io.emit('status', '🗑️ Sesión eliminada. Dale a Iniciar para escanear QR nuevo.');
-
-    } catch (error) {
-        console.error('❌ Error al borrar sesión:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// Manejo de señales para cierre limpio
-process.on('SIGINT', async () => {
-    console.log('\n🛑 Cerrando servidor...');
-    try { await client.destroy(); } catch(e) {}
-    process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-    console.log('\n🛑 Señal SIGTERM recibida...');
-    try { await client.destroy(); } catch(e) {}
-    process.exit(0);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('❌ Excepción no capturada:', error);
-});
+// RUTAS BASE
+app.get('/', (req, res) => res.render('index'));
+app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
 
 server.listen(PORT, () => {
-    const isRender = !!process.env.RENDER;
-    const publicUrl = isRender 
-        ? (process.env.RENDER_EXTERNAL_URL || 'https://bot-whatsapp.onrender.com')
-        : `http://localhost:${PORT}`;
-    
-    console.log('='.repeat(50));
-    console.log(`✅ Servidor Web iniciado (MODO SEGURO - ESPERANDO INICIO MANUAL)`);
-    console.log(`📡 Puerto: ${PORT}`);
-    console.log(`🔐 Auth: ${MI_TOKEN_SECRETO ? 'Configurado ✅' : 'NO CONFIGURADO ❌'}`);
-    console.log(`🌐 URL: ${publicUrl}`);
-    console.log(`📍 Entorno: ${isRender ? '☁️ Render' : '💻 Local'}`);
-    console.log('='.repeat(50));
+    console.log(`🛡️ SERVIDOR SEGURO INICIADO EN PUERTO ${PORT}`);
 });
