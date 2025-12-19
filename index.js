@@ -26,7 +26,7 @@ let clientInitialized = false;
 let mensajesEnRacha = 0;
 let limiteRachaActual = 5; 
 
-// MIDDLEWARE AUTH
+// MIDDLEWARE
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -37,7 +37,7 @@ const authMiddleware = (req, res, next) => {
 // CONFIGURACIÓN PUPPETEER BLINDADA PARA RENDER
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    authStrategy: new LocalAuth({ clientId: "client-render-fix", dataPath: './data' }),
+    authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
     puppeteer: {
         headless: true,
         args: [
@@ -68,6 +68,7 @@ const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady) return; 
 
+    // 1. CHEQUEO HORARIO
     const officeStatus = checkOfficeHours();
     if (!officeStatus.isOpen) {
         if (officeStatus.hour >= 18) {
@@ -81,6 +82,7 @@ const processQueue = async () => {
         return;
     }
 
+    // 2. PAUSAS LARGAS (ANTI-BAN)
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
@@ -95,6 +97,7 @@ const processQueue = async () => {
     const item = messageQueue[0];
 
     try {
+        // FILTRO DE NÚMERO (TU REGLA)
         let cleanNumber = item.numero.replace(/\D/g, '');
         const esLongitudValida = (cleanNumber.length === 10) || (cleanNumber.length === 12 && cleanNumber.startsWith('52')) || (cleanNumber.length === 13 && cleanNumber.startsWith('521'));
         
@@ -103,6 +106,8 @@ const processQueue = async () => {
         const finalNumber = cleanNumber + '@c.us';
 
         console.log(`⏳ Procesando ${item.numero}...`);
+        
+        // Simular escritura humana
         const typingDelay = getRandomDelay(4000, 8000);
         await new Promise(r => setTimeout(r, typingDelay));
 
@@ -120,6 +125,8 @@ const processQueue = async () => {
     } catch (error) {
         console.error('❌ Error:', error.message);
         item.resolve({ success: false, error: error.message });
+        
+        // KILL SWITCH: Si hay ban o error grave, matamos el proceso
         if(error.message.includes('Protocol') || error.message.includes('destroyed')) {
             console.log('💀 Error crítico. Reiniciando...');
             process.exit(1); 
@@ -205,8 +212,14 @@ app.post('/reset-session', authMiddleware, async (req, res) => {
 
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje } = req.body;
+    
+    // Si el bot está apagado, RECHAZAR mensaje
     if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
+    
+    // Validación de 10 dígitos
     if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
+    
+    // Validación de horario
     const office = checkOfficeHours();
     if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada' });
 
@@ -224,5 +237,5 @@ app.get('/', (req, res) => res.render('index'));
 app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
 
 server.listen(PORT, () => {
-    console.log(`🛡️ SERVIDOR v3.2 (CHROME FIX) INICIADO EN PUERTO ${PORT}`);
+    console.log(`🛡️ SERVIDOR FINAL INICIADO EN PUERTO ${PORT}`);
 });
