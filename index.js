@@ -70,6 +70,7 @@ const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady) return; 
 
+    // 1. CHEQUEO HORARIO
     const officeStatus = checkOfficeHours();
     if (!officeStatus.isOpen) {
         if (officeStatus.hour >= 18) {
@@ -83,6 +84,7 @@ const processQueue = async () => {
         return;
     }
 
+    // 2. PAUSAS LARGAS (ANTI-BAN)
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
@@ -152,7 +154,9 @@ const processQueue = async () => {
 // --- RUTA 1: ENVIAR SIMPLE (TEXTO O FOTO) ---
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje, media_url } = req.body;
-    if (!isClientReady) return res.status(503).json({ success: false, error: 'Bot Apagado' });
+    
+    if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
+    if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
     
     const office = checkOfficeHours();
     if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada' });
@@ -162,7 +166,7 @@ app.post('/enviar', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// --- RUTA 2: ENVIAR TICKET PDF (HÍBRIDO: TICKET + EVIDENCIA) ---
+// ▼▼▼ NUEVA RUTA: ENVIAR TICKET PDF (HÍBRIDO: TICKET + EVIDENCIA) ▼▼▼
 app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
     const { numero, datos_ticket, foto_evidencia } = req.body; 
 
@@ -251,7 +255,6 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
 
         const browser = client.puppeteer.browser; 
         const page = await browser.newPage();
-        // waitUntil: 'networkidle0' es vital para que espere a cargar la foto antes de imprimir
         await page.setContent(htmlContent, { waitUntil: 'networkidle0' }); 
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
         await page.close();
@@ -266,6 +269,7 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
         console.error("❌ Error generando PDF:", e);
     }
 });
+// ▲▲▲ FIN NUEVA RUTA ▲▲▲
 
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
@@ -294,6 +298,7 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => { messageQueue = []; res
 app.get('/', (req, res) => res.render('index'));
 app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
 
+// EVENTOS SOCKET
 client.on('qr', (qr) => { console.log('📸 QR'); io.emit('qr', qr); io.emit('status', '📸 ESCANEA AHORA'); });
 client.on('ready', () => { isClientReady = true; io.emit('status', '✅ BOT ACTIVO'); io.emit('connected', { name: client.info.pushname, number: client.info.wid.user }); processQueue(); });
 client.on('authenticated', () => io.emit('status', '🔑 Cargando...'));
