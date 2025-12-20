@@ -1,10 +1,15 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js'); // <--- 1. AGREGADO MessageMedia
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone'); 
+
+// ▼▼▼ FIX FFMPEG: ESTO ARREGLA EL ERROR "t" ▼▼▼
+const ffmpegPath = require('ffmpeg-static');
+process.env.FFMPEG_PATH = ffmpegPath;
+// ▲▲▲ FIN FIX ▲▲▲
 
 const app = express();
 const server = http.createServer(app);
@@ -34,8 +39,9 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// CONFIGURACIÓN PUPPETEER BLINDADA PARA RENDER (INTACTA)
+// CONFIGURACIÓN PUPPETEER BLINDADA
 const client = new Client({
+    // User-Agent para parecer un navegador real y evitar bloqueos
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
     puppeteer: {
@@ -51,7 +57,9 @@ const client = new Client({
             '--disable-gpu'
         ]
     },
-    qrMaxRetries: 5
+    qrMaxRetries: 5,
+    // Aseguramos que use el ffmpeg que acabamos de instalar
+    ffmpegPath: ffmpegPath 
 });
 
 // UTILIDADES
@@ -107,19 +115,17 @@ const processQueue = async () => {
 
         console.log(`⏳ Procesando ${item.numero}...`);
         
-        // Simular escritura humana
         const typingDelay = getRandomDelay(4000, 8000);
         await new Promise(r => setTimeout(r, typingDelay));
 
         const isRegistered = await client.isRegisteredUser(finalNumber);
 
         if (isRegistered) {
-            
-            // ▼▼▼ AQUÍ ESTÁ LA LÓGICA DE FOTO CORREGIDA PARA DEBUGGING ▼▼▼
+            // ▼▼▼ LÓGICA DE FOTO CON DEBUGGING Y SEGURIDAD ▼▼▼
             if (item.mediaUrl) {
                 try {
                     console.log("📸 Detectada URL de imagen. Intentando descargar...");
-                    console.log(`🔗 LINK S3: ${item.mediaUrl}`); // Para que veas el link en el log
+                    // No imprimimos el link completo para no llenar el log, pero sabemos que está ahí.
 
                     // TRUCO: Usamos headers de User-Agent para que S3 no nos bloquee
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { 
@@ -131,19 +137,16 @@ const processQueue = async () => {
                         }
                     });
 
-                    // Verificación extra
-                    if (!media || !media.data) throw new Error("La imagen se descargó vacía o corrupta.");
+                    if (!media || !media.data) throw new Error("La imagen se descargó vacía.");
                     
                     // Enviamos imagen con el texto como Caption
                     await client.sendMessage(finalNumber, media, { caption: item.mensaje });
                     console.log(`✅ FOTO ENVIADA a ${item.numero}`);
 
                 } catch (imgError) {
-                    // IMPRIMIMOS EL ERROR COMPLETO
-                    console.error("⚠️ ERROR CON LA IMAGEN:");
-                    console.error(imgError); 
+                    console.error("⚠️ ERROR CON LA IMAGEN:", imgError); 
 
-                    // RESPALDO: Enviamos texto + link para no perder la info
+                    // RESPALDO: Enviamos texto + link
                     await client.sendMessage(finalNumber, item.mensaje + `\n\n(No se pudo cargar la vista previa, ver imagen aquí: ${item.mediaUrl})`);
                     console.log("✅ Texto de respaldo enviado.");
                 }
@@ -161,24 +164,22 @@ const processQueue = async () => {
             item.resolve({ success: false, error: 'Número no registrado' });
         }
     } catch (error) {
-        console.error('❌ Error general:', error); // Log completo del error
+        console.error('❌ Error general:', error.message);
         item.resolve({ success: false, error: error.message || 'Error desconocido' });
         
-        // KILL SWITCH: Si hay ban o error grave, matamos el proceso
         if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) {
             console.log('💀 Error crítico. Reiniciando...');
             process.exit(1); 
         }
     } finally {
         messageQueue.shift(); 
-        // Tu pausa de seguridad original (respetada)
         const shortPause = getRandomDelay(60000, 90000); 
         console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
         setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
     }
 };
 
-// EVENTOS
+// EVENTOS Y API (Sin cambios)
 client.on('qr', (qr) => {
     console.log('📸 NUEVO QR');
     io.emit('qr', qr);
@@ -210,7 +211,6 @@ client.on('disconnected', (reason) => {
     if (clientInitialized) process.exit(0); 
 });
 
-// API
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
     if (clientInitialized) return res.json({ msg: 'Ya se está iniciando...' });
@@ -249,27 +249,21 @@ app.post('/reset-session', authMiddleware, async (req, res) => {
     }
 });
 
-// 2. CAMBIO EN LA RUTA ENVIAR: Aceptar media_url
 app.post('/enviar', authMiddleware, (req, res) => {
-    const { numero, mensaje, media_url } = req.body; // <--- Agregamos media_url
+    const { numero, mensaje, media_url } = req.body;
     
-    // 1. Validaciones rápidas
     if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
     if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
     
-    // 2. Check de horario
     const office = checkOfficeHours();
     if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada' });
 
-    // 🔥 RESPUESTA INMEDIATA (INTACTA)
-    // Esto es vital para tu Lambda, no lo toqué.
     res.json({ success: true, message: 'Mensaje encolado. Se enviará en breve.', status: 'queued' });
 
-    // 3. Encolar el mensaje
     messageQueue.push({ 
         numero, 
         mensaje, 
-        mediaUrl: media_url, // <--- Guardamos la URL para procesarla después
+        mediaUrl: media_url, 
         resolve: (resultado) => { console.log(`[Reporte] Mensaje a ${numero}: ${resultado.success ? 'Enviado' : 'Falló'}`); }
     });
 
