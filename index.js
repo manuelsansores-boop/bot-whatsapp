@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
+const moment = require('moment-timezone'); 
 const puppeteer = require('puppeteer'); 
 
 // ▼▼▼ FIX FFMPEG ▼▼▼
@@ -58,9 +59,9 @@ const client = new Client({
 // UTILIDADES
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 
-const checkOfficeHours = () => { return { isOpen: true }; }; // MODO 24/7
+const checkOfficeHours = () => { return { isOpen: true }; };
 
-// --- FUNCIÓN PARA GENERAR EL PDF (SE LLAMA DENTRO DE LA COLA) ---
+// --- FUNCIÓN PARA GENERAR EL PDF (DENTRO DE LA COLA) ---
 async function generarYEnviarPDF(item, client) {
     try {
         console.log(`📄 Generando PDF en cola para ${item.numero}...`);
@@ -147,6 +148,7 @@ async function generarYEnviarPDF(item, client) {
         if (chatId.length === 10) chatId = '52' + chatId;
         chatId = chatId + '@c.us';
         
+        // USAMOS EL MENSAJE DINÁMICO QUE VIENE DE LA LAMBDA
         const captionFinal = item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠";
 
         await client.sendMessage(chatId, media, { caption: captionFinal });
@@ -164,86 +166,92 @@ const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady) return; 
 
-    // Pausa Anti-Ban
+    // ▼▼▼ AQUÍ ESTÁ LA PAUSA DE MINUTOS (10 a 20) ▼▼▼
     if (mensajesEnRacha >= limiteRachaActual) {
-        const minutosPausa = getRandomDelay(2, 5);
-        console.log(`☕ PAUSA LÍMITE ALCANZADO: ${minutosPausa} MIN...`);
-        io.emit('status', `☕ Descanso (${minutosPausa} min)`);
+        const minutosPausa = getRandomDelay(10, 20); 
+        console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
+        io.emit('status', `☕ Descanso de seguridad (${minutosPausa} min)`);
         mensajesEnRacha = 0;
         limiteRachaActual = getRandomDelay(3, 7); 
-        setTimeout(() => { console.log('⚡ Reactivando cola...'); processQueue(); }, minutosPausa * 60 * 1000);
+        setTimeout(() => { console.log('⚡ Volviendo...'); processQueue(); }, minutosPausa * 60 * 1000);
         return;
     }
+    // ▲▲▲ FIN PAUSA MINUTOS ▲▲▲
 
     isProcessingQueue = true;
     const item = messageQueue[0];
 
     try {
-        // Pausa de seguridad antes de procesar (Simular humano escribiendo/adjuntando)
-        const typingDelay = getRandomDelay(3000, 6000); 
-        console.log(`⏳ Procesando ${item.type} para ${item.numero} (Espera: ${Math.round(typingDelay/1000)}s)...`);
-        await new Promise(r => setTimeout(r, typingDelay));
-
         let cleanNumber = item.numero.replace(/\D/g, '');
+        const esLongitudValida = (cleanNumber.length === 10) || (cleanNumber.length === 12 && cleanNumber.startsWith('52')) || (cleanNumber.length === 13 && cleanNumber.startsWith('521'));
+        
+        if (!esLongitudValida) throw new Error('Formato inválido');
         if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
         const finalNumber = cleanNumber + '@c.us';
+
+        console.log(`⏳ Procesando ${item.numero}...`);
+        
+        // --- TIEMPO DE ESPERA "ESCRIBIENDO" (4 a 8 seg) ---
+        const typingDelay = getRandomDelay(4000, 8000);
+        await new Promise(r => setTimeout(r, typingDelay));
 
         const isRegistered = await client.isRegisteredUser(finalNumber);
 
         if (isRegistered) {
-            // ▼▼▼ LÓGICA DIVIDIDA POR TIPO DE MENSAJE ▼▼▼
+            // LÓGICA DE ENVÍO
             if (item.type === 'pdf') {
-                // ES UN TICKET PDF
                 await generarYEnviarPDF(item, client);
             } else {
-                // ES UN MENSAJE NORMAL (Texto o Foto)
                 if (item.mediaUrl) {
                     try {
-                        const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                        const media = await MessageMedia.fromUrl(item.mediaUrl, { 
+                            unsafeMime: true,
+                            reqOptions: { headers: { 'User-Agent': 'Mozilla/5.0...' } }
+                        });
                         await client.sendMessage(finalNumber, media, { caption: item.mensaje });
-                        console.log(`✅ MEDIA ENVIADA a ${item.numero}`);
+                        console.log(`✅ FOTO ENVIADA a ${item.numero}`);
                     } catch (imgError) {
-                        console.error("⚠️ Error media:", imgError);
-                        await client.sendMessage(finalNumber, item.mensaje + `\n\n(Ver: ${item.mediaUrl})`);
+                        console.error("⚠️ Error img:", imgError);
+                        await client.sendMessage(finalNumber, item.mensaje + `\n\n(Link: ${item.mediaUrl})`);
                     }
                 } else {
                     await client.sendMessage(finalNumber, item.mensaje);
                     console.log(`✅ TEXTO ENVIADO a ${item.numero}`);
                 }
             }
-            // ▲▲▲ FIN LÓGICA ▼▼▼
-
             item.resolve({ success: true });
             mensajesEnRacha++; 
         } else {
             console.log(`⚠️ NO REGISTRADO: ${item.numero}`);
-            item.resolve({ success: false, error: 'No registrado' });
+            item.resolve({ success: false, error: 'Número no registrado' });
         }
     } catch (error) {
-        console.error('❌ Error Queue:', error.message);
+        console.error('❌ Error:', error.message);
         item.resolve({ success: false, error: error.message });
-        if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) process.exit(1); 
+        if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) {
+            process.exit(1); 
+        }
     } finally {
         messageQueue.shift(); 
-        // Pausa post-envío para no saturar
-        const postDelay = getRandomDelay(2000, 4000);
-        console.log(`💤 Esperando ${postDelay}ms para siguiente mensaje...`);
-        setTimeout(() => { isProcessingQueue = false; processQueue(); }, postDelay);
+        
+        // --- TIEMPO DE ESPERA POST-ENVÍO (60 a 90 seg) ---
+        const shortPause = getRandomDelay(60000, 90000); 
+        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
+        setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
     }
 };
 
-// RUTA 1: ENVIAR SIMPLE (COLA)
+// RUTA 1: ENVIAR SIMPLE
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje, media_url } = req.body;
-    if (!isClientReady) return res.status(503).json({ error: 'Bot Apagado' });
     
-    // Validar hora si es necesario (Ahora está 24/7)
+    if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
+    if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
+    
     const office = checkOfficeHours();
     if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada' });
 
-    res.json({ success: true, message: 'Encolado' });
-    
-    // Agregamos a la cola con tipo 'normal'
+    res.json({ success: true, message: 'Encolado', status: 'queued' });
     messageQueue.push({ 
         type: 'normal',
         numero, 
@@ -254,33 +262,35 @@ app.post('/enviar', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// RUTA 2: ENVIAR TICKET PDF (AHORA USA LA COLA)
+// RUTA 2: ENVIAR TICKET PDF (ENCOLADO)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     const { numero, datos_ticket, foto_evidencia, mensaje } = req.body; 
-    if (!isClientReady) return res.status(503).json({ error: 'Bot no listo' });
+
+    if (!isClientReady) return res.status(503).json({ success: false, error: 'Bot no listo' });
 
     res.json({ success: true, message: 'PDF Encolado...' });
 
-    // Agregamos a la cola con tipo 'pdf'
     messageQueue.push({
         type: 'pdf',
         numero,
-        mensaje, // Mensaje personalizado
+        mensaje, 
         pdfData: { datos_ticket, foto_evidencia },
         resolve: () => {}
     });
     processQueue();
 });
 
-// APIs CONTROL
+// APIs de Control
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
-    if (isClientReady) return res.json({ msg: 'Encendido' });
+    if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
+    console.log('🟢 Iniciando motor...');
     clientInitialized = true;
     try { await client.initialize(); res.json({ success: true }); } 
-    catch (e) { res.status(500).json({ error: e.message }); }
+    catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
 });
 
 app.post('/detener-bot', authMiddleware, async (req, res) => {
+    console.log('🔴 Deteniendo...');
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
 });
@@ -298,10 +308,12 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => { messageQueue = []; res
 app.get('/', (req, res) => res.render('index'));
 app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
 
-// SOCKETS
-client.on('qr', (qr) => { io.emit('qr', qr); io.emit('status', '📸 ESCANEA AHORA'); });
-client.on('ready', () => { isClientReady = true; io.emit('status', '✅ BOT ACTIVO'); processQueue(); });
+// EVENTOS SOCKET
+client.on('qr', (qr) => { console.log('📸 QR'); io.emit('qr', qr); io.emit('status', '📸 ESCANEA AHORA'); });
+client.on('ready', () => { isClientReady = true; io.emit('status', '✅ BOT ACTIVO'); io.emit('connected', { name: client.info.pushname, number: client.info.wid.user }); processQueue(); });
 client.on('authenticated', () => io.emit('status', '🔑 Cargando...'));
 client.on('disconnected', () => { isClientReady = false; io.emit('status', '❌ Desconectado'); if (clientInitialized) process.exit(0); });
 
-server.listen(PORT, () => { console.log(`🛡️ SERVIDOR EN PUERTO ${PORT}`); });
+server.listen(PORT, () => {
+    console.log(`🛡️ SERVIDOR FINAL INICIADO EN PUERTO ${PORT}`);
+});
