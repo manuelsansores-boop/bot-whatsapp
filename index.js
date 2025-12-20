@@ -41,34 +41,28 @@ const authMiddleware = (req, res, next) => {
 
 // CONFIGURACIÓN PUPPETEER
 const client = new Client({
-    // User-Agent para evitar bloqueos de S3
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
     puppeteer: {
         headless: true,
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process', 
-            '--disable-gpu'
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
+            '--single-process', '--disable-gpu'
         ]
     },
     qrMaxRetries: 5,
-    ffmpegPath: ffmpegPath // IMPORTANTE PARA IMÁGENES/STICKERS
+    ffmpegPath: ffmpegPath
 });
 
 // UTILIDADES
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 
-// FIX HORARIO: Siempre abierto para pruebas
 const checkOfficeHours = () => {
     const now = moment().tz("America/Mexico_City");
     const hour = now.hour(); 
-    return { isOpen: true, hour: hour, timeString: now.format('HH:mm') };
+    // Abierto de 8am a 10pm (22hrs)
+    return { isOpen: hour >= 8 && hour < 22, hour: hour, timeString: now.format('HH:mm') };
 };
 
 // PROCESADOR DE COLA
@@ -76,7 +70,19 @@ const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady) return; 
 
-    // Pausa Anti-Ban
+    const officeStatus = checkOfficeHours();
+    if (!officeStatus.isOpen) {
+        if (officeStatus.hour >= 18) {
+             console.log('🌙 CERRADO. Borrando cola.');
+             messageQueue = []; 
+             io.emit('status', '🌙 Oficina Cerrada. Cola vaciada.');
+        } else {
+             console.log('zzz Muy temprano.');
+             setTimeout(processQueue, 600000); 
+        }
+        return;
+    }
+
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
@@ -94,7 +100,7 @@ const processQueue = async () => {
         let cleanNumber = item.numero.replace(/\D/g, '');
         const esLongitudValida = (cleanNumber.length === 10) || (cleanNumber.length === 12 && cleanNumber.startsWith('52')) || (cleanNumber.length === 13 && cleanNumber.startsWith('521'));
         
-        if (!esLongitudValida) throw new Error('Formato inválido (10 dígitos)');
+        if (!esLongitudValida) throw new Error('Formato inválido');
         if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
         const finalNumber = cleanNumber + '@c.us';
 
@@ -106,49 +112,33 @@ const processQueue = async () => {
         const isRegistered = await client.isRegisteredUser(finalNumber);
 
         if (isRegistered) {
-            // Lógica con FOTO
             if (item.mediaUrl) {
+                // Lógica de Foto normal
                 try {
-                    console.log("📸 Detectada URL de imagen. Descargando...");
-                    // User-Agent para que S3 no bloquee
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { 
                         unsafeMime: true,
-                        reqOptions: {
-                            headers: { 
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                            }
-                        }
+                        reqOptions: { headers: { 'User-Agent': 'Mozilla/5.0...' } }
                     });
-
-                    if (!media || !media.data) throw new Error("La imagen se descargó vacía.");
-                    
                     await client.sendMessage(finalNumber, media, { caption: item.mensaje });
                     console.log(`✅ FOTO ENVIADA a ${item.numero}`);
-
                 } catch (imgError) {
-                    console.error("⚠️ ERROR CON LA IMAGEN:", imgError); 
-                    // Respaldo: Texto + Link
-                    await client.sendMessage(finalNumber, item.mensaje + `\n\n(Ver imagen: ${item.mediaUrl})`);
-                    console.log("✅ Texto de respaldo enviado.");
+                    console.error("⚠️ Error img:", imgError);
+                    await client.sendMessage(finalNumber, item.mensaje + `\n\n(Link: ${item.mediaUrl})`);
                 }
             } else {
-                // Solo Texto
                 await client.sendMessage(finalNumber, item.mensaje);
                 console.log(`✅ TEXTO ENVIADO a ${item.numero}`);
             }
-
             item.resolve({ success: true });
             mensajesEnRacha++; 
         } else {
-            console.log(`⚠️ NO TIENE WHATSAPP: ${item.numero}`);
+            console.log(`⚠️ NO REGISTRADO: ${item.numero}`);
             item.resolve({ success: false, error: 'Número no registrado' });
         }
     } catch (error) {
-        console.error('❌ Error general:', error.message);
-        item.resolve({ success: false, error: error.message || 'Error desconocido' });
-        
+        console.error('❌ Error:', error.message);
+        item.resolve({ success: false, error: error.message });
         if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) {
-            console.log('💀 Error crítico. Reiniciando...');
             process.exit(1); 
         }
     } finally {
@@ -159,53 +149,46 @@ const processQueue = async () => {
     }
 };
 
-// --- RUTA 1: ENVIAR MENSAJE/FOTO ---
+// --- RUTA 1: ENVIAR SIMPLE (TEXTO O FOTO) ---
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje, media_url } = req.body;
+    if (!isClientReady) return res.status(503).json({ success: false, error: 'Bot Apagado' });
     
-    if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
-    if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
-    
-    // Respondemos OK de inmediato
-    res.json({ success: true, message: 'Mensaje encolado.', status: 'queued' });
+    const office = checkOfficeHours();
+    if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada' });
 
-    messageQueue.push({ 
-        numero, 
-        mensaje, 
-        mediaUrl: media_url, 
-        resolve: (resultado) => { console.log(`[Reporte] ${numero}: ${resultado.success ? 'Enviado' : 'Falló'}`); }
-    });
-
-    console.log(`📥 Mensaje recibido. Cola: ${messageQueue.length}`);
+    res.json({ success: true, message: 'Encolado', status: 'queued' });
+    messageQueue.push({ numero, mensaje, mediaUrl: media_url, resolve: () => {} });
     processQueue();
 });
 
-// --- RUTA 2: ENVIAR TICKET PDF (NUEVO) ---
+// --- RUTA 2: ENVIAR TICKET PDF (HÍBRIDO: TICKET + EVIDENCIA) ---
 app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
-    const { numero, datos_ticket } = req.body; 
+    const { numero, datos_ticket, foto_evidencia } = req.body; 
 
     if (!isClientReady) return res.status(503).json({ success: false, error: 'Bot no listo' });
 
     res.json({ success: true, message: 'Generando PDF...' });
 
     try {
-        console.log(`📄 Generando PDF para ${numero}...`);
+        console.log(`📄 Generando PDF Híbrido para ${numero}...`);
 
-        // HTML del Ticket (Estilos Ferroláminas)
         const htmlContent = `
         <html>
             <head>
                 <style>
-                    body { font-family: 'Roboto', sans-serif; font-size: 14px; color: #333; margin: 0; padding: 20px; }
+                    body { font-family: 'Roboto', sans-serif; font-size: 12px; color: #333; margin: 0; padding: 20px; }
                     .ticket { width: 100%; max-width: 400px; margin: 0 auto; border: 1px solid #ddd; padding: 10px; }
                     .header, .footer { text-align: center; margin-bottom: 10px; border-bottom: 2px solid #000; padding-bottom: 10px; }
                     .header p, .footer p { margin: 2px 0; }
                     .bold { font-weight: bold; }
                     .big { font-size: 1.2em; }
                     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                    th, td { text-align: left; padding: 5px; border-bottom: 1px solid #eee; font-size: 12px; }
+                    th, td { text-align: left; padding: 5px; border-bottom: 1px solid #eee; font-size: 11px; }
                     .totals { margin-top: 15px; text-align: right; }
                     .totals p { margin: 3px 0; }
+                    .evidencia { margin-top: 20px; text-align: center; border-top: 2px dashed #ccc; padding-top: 10px; }
+                    .evidencia img { max-width: 100%; height: auto; border-radius: 5px; margin-top: 5px; }
                 </style>
             </head>
             <body>
@@ -252,6 +235,12 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
                         <p class="bold big">TOTAL: $${datos_ticket.total}</p>
                     </div>
 
+                    ${foto_evidencia ? `
+                    <div class="evidencia">
+                        <p class="bold">📸 EVIDENCIA DE ENTREGA</p>
+                        <img src="${foto_evidencia}" />
+                    </div>` : ''}
+
                     <div class="footer" style="margin-top: 20px; border:none;">
                         <p>GRACIAS POR SU COMPRA</p>
                         <p>www.ferrolaminas.com.mx</p>
@@ -260,25 +249,24 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
             </body>
         </html>`;
 
-        // Generar PDF con Chrome
         const browser = client.puppeteer.browser; 
         const page = await browser.newPage();
-        await page.setContent(htmlContent);
+        // waitUntil: 'networkidle0' es vital para que espere a cargar la foto antes de imprimir
+        await page.setContent(htmlContent, { waitUntil: 'networkidle0' }); 
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
         await page.close();
 
-        // Enviar
         const media = new MessageMedia('application/pdf', pdfBuffer.toString('base64'), `Ticket-${datos_ticket.folio}.pdf`);
         let chatId = numero.includes('@c.us') ? numero : `${numero}@c.us`;
-        await client.sendMessage(chatId, media, { caption: "Su comprobante de compra 📄" });
-        console.log(`✅ PDF enviado a ${numero}`);
+        
+        await client.sendMessage(chatId, media, { caption: "Su pedido ha sido entregado. Adjunto encontrará su ticket y evidencia de entrega. 📄🏠" });
+        console.log(`✅ PDF (con evidencia) enviado a ${numero}`);
 
     } catch (e) {
         console.error("❌ Error generando PDF:", e);
     }
 });
 
-// APIs de Control
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
     console.log('🟢 Iniciando motor...');
@@ -306,7 +294,6 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => { messageQueue = []; res
 app.get('/', (req, res) => res.render('index'));
 app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
 
-// EVENTOS SOCKET
 client.on('qr', (qr) => { console.log('📸 QR'); io.emit('qr', qr); io.emit('status', '📸 ESCANEA AHORA'); });
 client.on('ready', () => { isClientReady = true; io.emit('status', '✅ BOT ACTIVO'); io.emit('connected', { name: client.info.pushname, number: client.info.wid.user }); processQueue(); });
 client.on('authenticated', () => io.emit('status', '🔑 Cargando...'));
