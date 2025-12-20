@@ -256,7 +256,7 @@ app.post('/enviar', authMiddleware, (req, res) => {
     if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
     
     const office = checkOfficeHours();
-    if (office.hour >= 18) return res.status(400).json({ error: 'Oficina cerrada' });
+    if (office.hour >= 22) return res.status(400).json({ error: 'Oficina cerrada' });
 
     res.json({ success: true, message: 'Mensaje encolado. Se enviará en breve.', status: 'queued' });
 
