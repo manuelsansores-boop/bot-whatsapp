@@ -68,7 +68,7 @@ const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) 
 const checkOfficeHours = () => {
     const now = moment().tz("America/Mexico_City");
     const hour = now.hour(); 
-    return { isOpen: hour >= 8 && hour < 18, hour: hour, timeString: now.format('HH:mm') };
+    return { isOpen: hour >= 8 && hour < 22, hour: hour, timeString: now.format('HH:mm') };
 };
 
 // PROCESADOR DE COLA
