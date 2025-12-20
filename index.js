@@ -61,8 +61,8 @@ const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) 
 const checkOfficeHours = () => {
     const now = moment().tz("America/Mexico_City");
     const hour = now.hour(); 
-    // Abierto de 8am a 10pm (22hrs)
-    return { isOpen: hour >= 8 && hour < 22, hour: hour, timeString: now.format('HH:mm') };
+    // ABIERTO HASTA LAS 23 HRS PARA TUS PRUEBAS
+    return { isOpen: hour >= 8 && hour < 23, hour: hour, timeString: now.format('HH:mm') };
 };
 
 // PROCESADOR DE COLA
@@ -73,7 +73,7 @@ const processQueue = async () => {
     // 1. CHEQUEO HORARIO
     const officeStatus = checkOfficeHours();
     if (!officeStatus.isOpen) {
-        if (officeStatus.hour >= 18) {
+        if (officeStatus.hour >= 23) {
              console.log('🌙 CERRADO. Borrando cola.');
              messageQueue = []; 
              io.emit('status', '🌙 Oficina Cerrada. Cola vaciada.');
