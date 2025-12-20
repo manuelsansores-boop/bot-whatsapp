@@ -5,6 +5,7 @@ const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone'); 
+const puppeteer = require('puppeteer'); // <--- IMPORTANTE: NECESARIO PARA EL PDF
 
 // ▼▼▼ FIX FFMPEG ▼▼▼
 const ffmpegPath = require('ffmpeg-static');
@@ -39,7 +40,7 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// CONFIGURACIÓN PUPPETEER
+// CONFIGURACIÓN PUPPETEER DEL BOT
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
@@ -61,7 +62,7 @@ const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) 
 const checkOfficeHours = () => {
     const now = moment().tz("America/Mexico_City");
     const hour = now.hour(); 
-    // ABIERTO HASTA LAS 23 HRS PARA TUS PRUEBAS
+    // ABIERTO HASTA LAS 23 HRS
     return { isOpen: hour >= 8 && hour < 23, hour: hour, timeString: now.format('HH:mm') };
 };
 
@@ -70,7 +71,6 @@ const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady) return; 
 
-    // 1. CHEQUEO HORARIO
     const officeStatus = checkOfficeHours();
     if (!officeStatus.isOpen) {
         if (officeStatus.hour >= 23) {
@@ -84,7 +84,6 @@ const processQueue = async () => {
         return;
     }
 
-    // 2. PAUSAS LARGAS (ANTI-BAN)
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
@@ -115,7 +114,6 @@ const processQueue = async () => {
 
         if (isRegistered) {
             if (item.mediaUrl) {
-                // Lógica de Foto normal
                 try {
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { 
                         unsafeMime: true,
@@ -151,7 +149,7 @@ const processQueue = async () => {
     }
 };
 
-// --- RUTA 1: ENVIAR SIMPLE (TEXTO O FOTO) ---
+// --- RUTA 1: ENVIAR SIMPLE ---
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje, media_url } = req.body;
     
@@ -166,7 +164,7 @@ app.post('/enviar', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// ▼▼▼ NUEVA RUTA: ENVIAR TICKET PDF (HÍBRIDO: TICKET + EVIDENCIA) ▼▼▼
+// ▼▼▼ RUTA 2: ENVIAR TICKET PDF (ARREGLADO EL BUG DEL NAVEGADOR) ▼▼▼
 app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
     const { numero, datos_ticket, foto_evidencia } = req.body; 
 
@@ -253,11 +251,16 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
             </body>
         </html>`;
 
-        const browser = client.puppeteer.browser; 
+        // ▼▼▼ AQUÍ ESTÁ EL ARREGLO: LANZAMOS UN NAVEGADOR NUEVO ▼▼▼
+        const browser = await puppeteer.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
         const page = await browser.newPage();
         await page.setContent(htmlContent, { waitUntil: 'networkidle0' }); 
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-        await page.close();
+        await browser.close(); // IMPORTANTE: CERRARLO PARA NO TRABAR EL SERVER
+        // ▲▲▲ FIN ARREGLO ▲▲▲
 
         const media = new MessageMedia('application/pdf', pdfBuffer.toString('base64'), `Ticket-${datos_ticket.folio}.pdf`);
         let chatId = numero.includes('@c.us') ? numero : `${numero}@c.us`;
@@ -269,8 +272,8 @@ app.post('/enviar-ticket-pdf', authMiddleware, async (req, res) => {
         console.error("❌ Error generando PDF:", e);
     }
 });
-// ▲▲▲ FIN NUEVA RUTA ▲▲▲
 
+// APIs de Control
 app.post('/iniciar-bot', authMiddleware, async (req, res) => {
     if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
     console.log('🟢 Iniciando motor...');
