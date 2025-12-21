@@ -262,7 +262,7 @@ app.post('/enviar', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// RUTA 2: ENVIAR TICKET PDF (ENCOLADO)
+// RUTA 2: ENVIAR TICKET PDF (ENCOLADOS)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     const { numero, datos_ticket, foto_evidencia, mensaje } = req.body; 
 
