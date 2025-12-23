@@ -43,7 +43,12 @@ const authMiddleware = (req, res, next) => {
 
 // UTILIDADES
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
-const checkOfficeHours = () => { return { isOpen: true }; };
+const checkOfficeHours = () => { 
+    const hora = moment().tz('America/Mexico_City').hour();
+    // Solo permitir envíos de 8 AM a 6 PM (18:00)
+    if (hora >= 8 && hora < 18) return { isOpen: true }; 
+    return { isOpen: false }; 
+};
 
 // --- FUNCIÓN PARA DETERMINAR QUÉ CHIP TOCA ---
 function getTurnoActual() {
