@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Multi-Sesión v4</title>
+    <title>Panel Ping-Pong v5</title>
     <style>
         body { font-family: sans-serif; background: #f0f2f5; padding: 20px; text-align: center; }
-        .card { background: white; max-width: 600px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        .card { background: white; max-width: 650px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         
         /* ESTADOS */
         .status { padding: 15px; margin: 20px 0; border-radius: 8px; font-weight: bold; font-size: 1.1em; transition: 0.3s; }
@@ -17,77 +17,76 @@
         .idle { background: #e2e3e5; color: #41464b; }
 
         /* BOTONES */
-        .btn { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; color: white; font-weight: bold; transition: 0.2s; width: 90%; }
-        .btn:hover { opacity: 0.9; transform: scale(1.02); }
-        .btn:active { transform: scale(0.98); }
+        .btn { padding: 10px 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; margin: 5px; color: white; font-weight: bold; width: 90%; }
+        .btn:hover { opacity: 0.9; }
 
-        .btn-green { background: #198754; width: auto; min-width: 120px; } /* Botón General */
+        .btn-green { background: #198754; width: auto; min-width: 120px; }
         .btn-stop { background: #212529; width: auto; min-width: 120px; }
-        .btn-orange { background: #fd7e14; width: auto; }
+        .btn-orange { background: #fd7e14; }
         
-        /* BOTONES ESPECÍFICOS DE TURNO */
-        .btn-morning { background: #ffc107; color: #000; }
-        .btn-afternoon { background: #0d6efd; }
-        .btn-danger { background: #dc3545; font-size: 12px; margin-top: 10px; opacity: 0.8; }
-        .btn-danger:hover { opacity: 1; background: #b02a37; }
+        .btn-chip-a { background: #0d6efd; }
+        .btn-chip-b { background: #6610f2; }
+        .btn-danger { background: #dc3545; font-size: 11px; margin-top: 5px; opacity: 0.8; }
 
-        /* GRID PARA LOS DOS CELULARES */
-        .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 25px; margin-bottom: 25px; }
-        .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 12px; background: #f8f9fa; position: relative; }
-        
-        .turno-title { display: block; font-weight: bold; margin-bottom: 15px; font-size: 1.1em; text-transform: uppercase; }
-        .morning-box { border-top: 5px solid #ffc107; }
-        .afternoon-box { border-top: 5px solid #0d6efd; }
+        /* GRID TURNOS */
+        .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
+        .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 10px; background: #f9f9f9; }
+        .turno-title { font-weight: bold; font-size: 1.2em; display: block; margin-bottom: 5px; }
+        .horarios { font-size: 12px; color: #555; margin-bottom: 10px; background: #eee; padding: 5px; border-radius: 4px;}
 
-        /* LOGS Y EXTRAS */
-        .log { text-align: left; background: #212529; color: #00ff00; padding: 15px; height: 180px; overflow-y: scroll; font-family: 'Consolas', monospace; font-size: 12px; margin-top: 20px; border-radius: 8px; }
-        input { padding: 12px; width: 80%; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; text-align: center; }
-        
-        hr { border: 0; border-top: 1px solid #ddd; margin: 15px 0; }
+        .box-a { border-top: 5px solid #0d6efd; }
+        .box-b { border-top: 5px solid #6610f2; }
+
+        /* LOGS */
+        .log { text-align: left; background: #212529; color: #00ff00; padding: 10px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 11px; margin-top: 20px; border-radius: 5px; }
+        input { padding: 10px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 5px; text-align: center; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🛡️ Control Multi-Sesión</h1>
-        <p style="color: #666; font-size: 14px;">Cambio Automático: 12:00 PM</p>
+        <h1>🏓 Bot Ping-Pong (2 Chips)</h1>
+        <p style="color:#666; font-size:13px;">Cambio automático cada 2 horas</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         
-        <input type="password" id="token" placeholder="Ingresa Token Secreto">
+        <input type="password" id="token" placeholder="Token Secreto">
         
-        <div style="display: flex; justify-content: center; gap: 10px;">
-            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR AUTO</button>
+        <div>
+            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR SISTEMA</button>
             <button class="btn btn-stop" onclick="cmd('detener-bot')">⏹ APAGAR TODO</button>
         </div>
 
         <div class="grid-turnos">
             
-            <div class="turno-box morning-box">
-                <span class="turno-title">☀️ MAÑANA</span>
-                <p style="font-size: 12px; color: #666;">(8:00 AM - 12:00 PM)</p>
-                
-                <button class="btn btn-morning" onclick="cmd('iniciar-manana')">▶ Forzar Inicio</button>
-                <hr>
-                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-manana', 'MAÑANA')">🗑 BORRAR SESIÓN</button>
+            <div class="turno-box box-a">
+                <span class="turno-title">🔵 CHIP A</span>
+                <div class="horarios">
+                    8:00 - 10:00<br>
+                    12:00 - 14:00<br>
+                    16:00 - 18:00
+                </div>
+                <button class="btn btn-chip-a" onclick="cmd('iniciar-chip-a')">▶ Forzar Chip A</button>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-a', 'CHIP A')">🗑 BORRAR MEMORIA A</button>
             </div>
 
-            <div class="turno-box afternoon-box">
-                <span class="turno-title">🌙 TARDE</span>
-                <p style="font-size: 12px; color: #666;">(12:00 PM - Adelante)</p>
-                
-                <button class="btn btn-afternoon" onclick="cmd('iniciar-tarde')">▶ Forzar Inicio</button>
-                <hr>
-                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-tarde', 'TARDE')">🗑 BORRAR SESIÓN</button>
+            <div class="turno-box box-b">
+                <span class="turno-title">🟣 CHIP B</span>
+                <div class="horarios">
+                    10:00 - 12:00<br>
+                    14:00 - 16:00
+                </div>
+                <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar Chip B</button>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-b', 'CHIP B')">🗑 BORRAR MEMORIA B</button>
             </div>
 
         </div>
 
-        <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width: 100%;">🧹 Limpiar Cola de Mensajes Pendientes</button>
+        <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width:100%">🧹 Limpiar Cola</button>
 
-        <div id="qr-area" style="margin-top: 25px;"></div>
+        <div id="qr-area" style="margin-top: 20px;"></div>
         
         <div class="log" id="logs">
-            <div>> Panel v4 listo. Selecciona una opción...</div>
+            <div>> Panel Ping-Pong listo...</div>
         </div>
     </div>
 
@@ -98,22 +97,16 @@
         const statusBox = document.getElementById('status-box');
         const qrArea = document.getElementById('qr-area');
 
-        // Función para agregar logs
         function addLog(msg) {
             const div = document.createElement('div');
-            const time = new Date().toLocaleTimeString();
-            div.textContent = `[${time}] > ${msg}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] > ${msg}`;
             logs.appendChild(div);
             logs.scrollTop = logs.scrollHeight;
         }
 
-        // Función para enviar comandos al backend
         async function cmd(action) {
             const token = document.getElementById('token').value;
-            if(!token) return alert('⚠️ ¡Falta el TOKEN secreto!');
-            
-            addLog(`Enviando comando: ${action}...`);
-            
+            if(!token) return alert('⚠️ ¡Falta el TOKEN!');
             try {
                 const res = await fetch(`/${action}`, {
                     method: 'POST',
@@ -121,65 +114,31 @@
                 });
                 const data = await res.json();
                 addLog(data.message || data.msg || data.error);
-            } catch(e) { 
-                addLog('❌ Error de conexión con el servidor'); 
-            }
+            } catch(e) { addLog('❌ Error de conexión'); }
         }
 
-        // Función de seguridad para borrar sesiones
-        function confirmarBorrado(action, turno) {
-            const confirmacion = confirm(
-                `⚠️ ¿ESTÁS SEGURO DE BORRAR EL TURNO ${turno}?\n\n` +
-                `1. Esto desconectará el WhatsApp de ese horario.\n` +
-                `2. El bot se reiniciará.\n` +
-                `3. Tendrás que escanear el QR de nuevo.\n\n` +
-                `Úsalo solo si cambiaste de chip o te banearon.`
-            );
-
-            if(confirmacion) {
+        function confirmarBorrado(action, nombre) {
+            if(confirm(`¿Seguro que quieres borrar la memoria del ${nombre}?\n\nTendrás que escanearlo de nuevo.`)) {
                 cmd(action);
             }
         }
 
-        // --- EVENTOS EN TIEMPO REAL (SOCKETS) ---
-
         socket.on('status', (msg) => {
             statusBox.innerText = msg;
-            
-            // Colores según el mensaje
-            statusBox.className = 'status'; // Reset
+            statusBox.className = 'status'; 
             if(msg.includes('ACTIVO')) statusBox.classList.add('ready');
-            else if(msg.includes('Pausa') || msg.includes('Café')) statusBox.classList.add('coffee');
-            else if(msg.includes('RECHAZADAS') || msg.includes('Desconectado') || msg.includes('Error')) statusBox.classList.add('error');
             else if(msg.includes('Cargando') || msg.includes('ESCANEA')) statusBox.classList.add('wait');
+            else if(msg.includes('Error') || msg.includes('Desconectado')) statusBox.classList.add('error');
             else statusBox.classList.add('idle');
-            
             addLog(msg);
         });
 
         socket.on('qr', (code) => {
-            // Genera QR grande y visible
-            qrArea.innerHTML = `
-                <div style="background: white; padding: 10px; display: inline-block; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.2);">
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" />
-                    <p style="margin-top:10px; font-weight:bold;">📸 Escanea con el celular del turno</p>
-                </div>`;
-            statusBox.innerText = "📸 ESCANEA AHORA";
-            statusBox.className = 'status wait';
+            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA ESTE CHIP</p></div>`;
         });
         
         socket.on('connected', (u) => {
-            // Muestra quién está conectado
-            let color = u.session === 'morning' ? '#ffc107' : '#0d6efd';
-            let textoColor = u.session === 'morning' ? '#000' : '#fff';
-            
-            qrArea.innerHTML = `
-                <div style="background:${color}; color:${textoColor}; padding:15px; border-radius:12px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);">
-                    <h2 style="margin:0;">👤 CONECTADO</h2>
-                    <h3 style="margin:5px 0;">TURNO: ${u.session === 'morning' ? 'MAÑANA' : 'TARDE'}</h3>
-                    <p style="margin:5px 0; opacity:0.9;">${u.name}</p>
-                    <p style="margin:0; font-family:monospace;">${u.number}</p>
-                </div>`;
+            qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
         });
     </script>
 </body>
