@@ -41,18 +41,28 @@ const authMiddleware = (req, res, next) => {
 };
 
 // CONFIGURACIÓN PUPPETEER
-// CONFIGURACIÓN PUPPETEER
 const client = new Client({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
-            '--single-process', '--disable-gpu'
-        ]
-    },
+    // En tu archivo index.js, busca la parte de "puppeteer: {"
+puppeteer: {
+    headless: true,
+    // ▼▼▼ AGREGA ESTA LÍNEA OBLIGATORIAMENTE ▼▼▼
+    protocolTimeout: 300000, // Le damos 5 minutos de paciencia en lugar de 30 seg
+    // ▲▲▲ FIN DEL AGREGADO ▲▲▲
+    args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-dev-shm-usage', // Esto es vital en servidores Linux/Render
+        '--disable-accelerated-2d-canvas', 
+        '--no-first-run', 
+        '--no-zygote',
+        '--single-process', 
+        '--disable-gpu',
+        // RECOMENDACIÓN EXTRA: Limita la RAM que Node cree que tiene
+        '--js-flags="--max-old-space-size=1024"' 
+    ]
+},
     qrMaxRetries: 5,
     ffmpegPath: ffmpegPath
 });
