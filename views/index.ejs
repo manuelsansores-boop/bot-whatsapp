@@ -3,40 +3,91 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Seguro v3</title>
+    <title>Panel Multi-Sesión v4</title>
     <style>
         body { font-family: sans-serif; background: #f0f2f5; padding: 20px; text-align: center; }
-        .card { background: white; max-width: 500px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-        .status { padding: 15px; margin: 20px 0; border-radius: 8px; font-weight: bold; }
-        .ready { background: #d1e7dd; color: #0f5132; }
-        .wait { background: #fff3cd; color: #664d03; }
-        .error { background: #f8d7da; color: #842029; }
+        .card { background: white; max-width: 600px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        
+        /* ESTADOS */
+        .status { padding: 15px; margin: 20px 0; border-radius: 8px; font-weight: bold; font-size: 1.1em; transition: 0.3s; }
+        .ready { background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+        .wait { background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
+        .error { background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
         .coffee { background: #cff4fc; color: #055160; border: 2px dashed #0dcaf0; }
-        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin: 5px; color: white;}
-        .btn-green { background: #198754; }
-        .btn-red { background: #dc3545; }
-        .log { text-align: left; background: #212529; color: #00ff00; padding: 10px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 12px; margin-top: 20px; border-radius: 5px; }
+        .idle { background: #e2e3e5; color: #41464b; }
+
+        /* BOTONES */
+        .btn { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin: 5px; color: white; font-weight: bold; transition: 0.2s; width: 90%; }
+        .btn:hover { opacity: 0.9; transform: scale(1.02); }
+        .btn:active { transform: scale(0.98); }
+
+        .btn-green { background: #198754; width: auto; min-width: 120px; } /* Botón General */
+        .btn-stop { background: #212529; width: auto; min-width: 120px; }
+        .btn-orange { background: #fd7e14; width: auto; }
+        
+        /* BOTONES ESPECÍFICOS DE TURNO */
+        .btn-morning { background: #ffc107; color: #000; }
+        .btn-afternoon { background: #0d6efd; }
+        .btn-danger { background: #dc3545; font-size: 12px; margin-top: 10px; opacity: 0.8; }
+        .btn-danger:hover { opacity: 1; background: #b02a37; }
+
+        /* GRID PARA LOS DOS CELULARES */
+        .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 25px; margin-bottom: 25px; }
+        .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 12px; background: #f8f9fa; position: relative; }
+        
+        .turno-title { display: block; font-weight: bold; margin-bottom: 15px; font-size: 1.1em; text-transform: uppercase; }
+        .morning-box { border-top: 5px solid #ffc107; }
+        .afternoon-box { border-top: 5px solid #0d6efd; }
+
+        /* LOGS Y EXTRAS */
+        .log { text-align: left; background: #212529; color: #00ff00; padding: 15px; height: 180px; overflow-y: scroll; font-family: 'Consolas', monospace; font-size: 12px; margin-top: 20px; border-radius: 8px; }
+        input { padding: 12px; width: 80%; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; text-align: center; }
+        
+        hr { border: 0; border-top: 1px solid #ddd; margin: 15px 0; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🛡️ Bot Anti-Baneo v3</h1>
-        <p>Horario: 8:00 AM - 6:00 PM (CDMX)</p>
+        <h1>🛡️ Control Multi-Sesión</h1>
+        <p style="color: #666; font-size: 14px;">Cambio Automático: 12:00 PM</p>
         
-        <div id="status-box" class="status wait">Esperando conexión...</div>
+        <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         
-        <input type="password" id="token" placeholder="Token Secreto" style="padding: 10px; width: 80%; margin-bottom: 10px;">
+        <input type="password" id="token" placeholder="Ingresa Token Secreto">
         
-        <div>
-            <button class="btn btn-green" onclick="cmd('iniciar-bot')">▶ ENCENDER</button>
-            <button class="btn btn-red" onclick="cmd('detener-bot')">⏹ APAGAR</button>
-            <button class="btn" style="background:orange" onclick="cmd('limpiar-cola')">🗑 VACIAR COLA</button>
+        <div style="display: flex; justify-content: center; gap: 10px;">
+            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR AUTO</button>
+            <button class="btn btn-stop" onclick="cmd('detener-bot')">⏹ APAGAR TODO</button>
         </div>
 
-        <div id="qr-area" style="margin-top: 20px;"></div>
+        <div class="grid-turnos">
+            
+            <div class="turno-box morning-box">
+                <span class="turno-title">☀️ MAÑANA</span>
+                <p style="font-size: 12px; color: #666;">(8:00 AM - 12:00 PM)</p>
+                
+                <button class="btn btn-morning" onclick="cmd('iniciar-manana')">▶ Forzar Inicio</button>
+                <hr>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-manana', 'MAÑANA')">🗑 BORRAR SESIÓN</button>
+            </div>
+
+            <div class="turno-box afternoon-box">
+                <span class="turno-title">🌙 TARDE</span>
+                <p style="font-size: 12px; color: #666;">(12:00 PM - Adelante)</p>
+                
+                <button class="btn btn-afternoon" onclick="cmd('iniciar-tarde')">▶ Forzar Inicio</button>
+                <hr>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-tarde', 'TARDE')">🗑 BORRAR SESIÓN</button>
+            </div>
+
+        </div>
+
+        <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width: 100%;">🧹 Limpiar Cola de Mensajes Pendientes</button>
+
+        <div id="qr-area" style="margin-top: 25px;"></div>
         
         <div class="log" id="logs">
-            <div>> Sistema listo...</div>
+            <div>> Panel v4 listo. Selecciona una opción...</div>
         </div>
     </div>
 
@@ -47,16 +98,21 @@
         const statusBox = document.getElementById('status-box');
         const qrArea = document.getElementById('qr-area');
 
+        // Función para agregar logs
         function addLog(msg) {
             const div = document.createElement('div');
-            div.textContent = `> ${msg}`;
+            const time = new Date().toLocaleTimeString();
+            div.textContent = `[${time}] > ${msg}`;
             logs.appendChild(div);
             logs.scrollTop = logs.scrollHeight;
         }
 
+        // Función para enviar comandos al backend
         async function cmd(action) {
             const token = document.getElementById('token').value;
-            if(!token) return alert('Pon el token');
+            if(!token) return alert('⚠️ ¡Falta el TOKEN secreto!');
+            
+            addLog(`Enviando comando: ${action}...`);
             
             try {
                 const res = await fetch(`/${action}`, {
@@ -64,26 +120,66 @@
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
                 });
                 const data = await res.json();
-                addLog(data.message || data.error);
-            } catch(e) { addLog('Error red'); }
+                addLog(data.message || data.msg || data.error);
+            } catch(e) { 
+                addLog('❌ Error de conexión con el servidor'); 
+            }
         }
+
+        // Función de seguridad para borrar sesiones
+        function confirmarBorrado(action, turno) {
+            const confirmacion = confirm(
+                `⚠️ ¿ESTÁS SEGURO DE BORRAR EL TURNO ${turno}?\n\n` +
+                `1. Esto desconectará el WhatsApp de ese horario.\n` +
+                `2. El bot se reiniciará.\n` +
+                `3. Tendrás que escanear el QR de nuevo.\n\n` +
+                `Úsalo solo si cambiaste de chip o te banearon.`
+            );
+
+            if(confirmacion) {
+                cmd(action);
+            }
+        }
+
+        // --- EVENTOS EN TIEMPO REAL (SOCKETS) ---
 
         socket.on('status', (msg) => {
             statusBox.innerText = msg;
-            if(msg.includes('Listo')) statusBox.className = 'status ready';
-            else if(msg.includes('Pausa') || msg.includes('Café')) statusBox.className = 'status coffee';
-            else if(msg.includes('Cerrada')) statusBox.className = 'status error';
-            else statusBox.className = 'status wait';
+            
+            // Colores según el mensaje
+            statusBox.className = 'status'; // Reset
+            if(msg.includes('ACTIVO')) statusBox.classList.add('ready');
+            else if(msg.includes('Pausa') || msg.includes('Café')) statusBox.classList.add('coffee');
+            else if(msg.includes('RECHAZADAS') || msg.includes('Desconectado') || msg.includes('Error')) statusBox.classList.add('error');
+            else if(msg.includes('Cargando') || msg.includes('ESCANEA')) statusBox.classList.add('wait');
+            else statusBox.classList.add('idle');
+            
             addLog(msg);
         });
 
         socket.on('qr', (code) => {
-            qrArea.innerHTML = `<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(code)}" />`;
+            // Genera QR grande y visible
+            qrArea.innerHTML = `
+                <div style="background: white; padding: 10px; display: inline-block; border-radius: 10px; box-shadow: 0 0 20px rgba(0,0,0,0.2);">
+                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" />
+                    <p style="margin-top:10px; font-weight:bold;">📸 Escanea con el celular del turno</p>
+                </div>`;
             statusBox.innerText = "📸 ESCANEA AHORA";
+            statusBox.className = 'status wait';
         });
         
         socket.on('connected', (u) => {
-            qrArea.innerHTML = `<h3>👤 ${u.name}</h3><p>${u.number}</p>`;
+            // Muestra quién está conectado
+            let color = u.session === 'morning' ? '#ffc107' : '#0d6efd';
+            let textoColor = u.session === 'morning' ? '#000' : '#fff';
+            
+            qrArea.innerHTML = `
+                <div style="background:${color}; color:${textoColor}; padding:15px; border-radius:12px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);">
+                    <h2 style="margin:0;">👤 CONECTADO</h2>
+                    <h3 style="margin:5px 0;">TURNO: ${u.session === 'morning' ? 'MAÑANA' : 'TARDE'}</h3>
+                    <p style="margin:5px 0; opacity:0.9;">${u.name}</p>
+                    <p style="margin:0; font-family:monospace;">${u.number}</p>
+                </div>`;
         });
     </script>
 </body>

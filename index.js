@@ -24,11 +24,12 @@ const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// ESTADO
+// --- VARIABLES DE ESTADO (MODIFICADO PARA MULTI-SESIÓN) ---
+let client = null; // Ahora es una variable, no una constante, para poder cambiarla
+let activeSessionName = null; // 'morning' o 'afternoon'
 let isClientReady = false;
 let messageQueue = [];
 let isProcessingQueue = false;
-let clientInitialized = false;
 let mensajesEnRacha = 0;
 let limiteRachaActual = 5; 
 
@@ -40,40 +41,105 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// CONFIGURACIÓN PUPPETEER
-const client = new Client({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    authStrategy: new LocalAuth({ clientId: "client-v3-final", dataPath: './data' }),
-    // En tu archivo index.js, busca la parte de "puppeteer: {"
-puppeteer: {
-    headless: true,
-    // ▼▼▼ AGREGA ESTA LÍNEA OBLIGATORIAMENTE ▼▼▼
-    protocolTimeout: 300000, // Le damos 5 minutos de paciencia en lugar de 30 seg
-    // ▲▲▲ FIN DEL AGREGADO ▲▲▲
-    args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage', // Esto es vital en servidores Linux/Render
-        '--disable-accelerated-2d-canvas', 
-        '--no-first-run', 
-        '--no-zygote',
-        '--single-process', 
-        '--disable-gpu',
-        // RECOMENDACIÓN EXTRA: Limita la RAM que Node cree que tiene
-        '--js-flags="--max-old-space-size=1024"' 
-    ]
-},
-    qrMaxRetries: 5,
-    ffmpegPath: ffmpegPath
-});
-
 // UTILIDADES
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
-
 const checkOfficeHours = () => { return { isOpen: true }; };
 
-// --- FUNCIÓN PARA GENERAR EL PDF (DENTRO DE LA COLA) ---
-async function generarYEnviarPDF(item, client) {
+// --- FUNCIÓN PRINCIPAL: INICIAR SESIÓN (DINÁMICA) ---
+async function startSession(sessionName) {
+    // Si ya hay un cliente corriendo, lo matamos primero para evitar choques
+    if (client) {
+        try { await client.destroy(); } catch(e) {}
+        client = null;
+        isClientReady = false;
+    }
+
+    activeSessionName = sessionName;
+    console.log(`🔵 INICIANDO MODO: ${sessionName.toUpperCase()}`);
+    io.emit('status', `⏳ Cargando Turno: ${sessionName.toUpperCase()}...`);
+
+    // CONFIGURACIÓN PUPPETEER (TUS AJUSTES EXACTOS)
+    client = new Client({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        // AQUÍ ESTÁ LA MAGIA: El clientId cambia según el turno (client-morning o client-afternoon)
+        authStrategy: new LocalAuth({ 
+            clientId: `client-${sessionName}`, 
+            dataPath: './data' 
+        }),
+        puppeteer: {
+            headless: true,
+            protocolTimeout: 300000, // Tus 5 minutos de paciencia
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas', 
+                '--no-first-run', 
+                '--no-zygote',
+                '--single-process', 
+                '--disable-gpu',
+                '--js-flags="--max-old-space-size=1024"' 
+            ]
+        },
+        qrMaxRetries: 5,
+        ffmpegPath: ffmpegPath
+    });
+
+    // --- EVENTOS DEL CLIENTE ---
+    client.on('qr', (qr) => { 
+        console.log('📸 SE REQUIERE ESCANEO NUEVO'); 
+        io.emit('qr', qr); 
+        io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+    });
+
+    client.on('ready', () => { 
+        isClientReady = true; 
+        console.log(`✅ Cliente ${sessionName} LISTO Y CONECTADO`);
+        io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`); 
+        io.emit('connected', { 
+            name: client.info.pushname, 
+            number: client.info.wid.user, 
+            session: sessionName 
+        }); 
+        processQueue(); // Arranca la cola si había pendientes
+    });
+
+    client.on('authenticated', () => io.emit('status', '🔑 Llaves aceptadas...'));
+
+    // AUTO-LIMPIEZA: Si fallan las credenciales (Baneo o cambio de sesión manual en el cel)
+    client.on('auth_failure', async (msg) => {
+        console.error('⛔ CREDENCIALES INVÁLIDAS (Posible Baneo o Cierre de Sesión). Limpiando...');
+        io.emit('status', '⛔ ERROR DE CREDENCIALES. Reiniciando...');
+        
+        // Borramos la carpeta corrupta automáticamente
+        const folderPath = `./data/session-client-${sessionName}`; 
+        try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e) {}
+        
+        // Reiniciamos para pedir QR nuevo
+        setTimeout(() => process.exit(1), 2000); 
+    });
+
+    client.on('disconnected', async (reason) => { 
+        console.log('❌ Desconectado:', reason);
+        isClientReady = false; 
+        io.emit('status', '❌ Desconectado'); 
+        
+        // Si tú cerraste sesión manualmente, limpiamos el disco
+        if (reason === 'LOGOUT' || reason === 'NAVIGATION') {
+             console.log('🧹 Limpiando sesión por Logout manual...');
+             const folderPath = `./data/session-client-${sessionName}`;
+             try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e){}
+        }
+        
+        // Reinicio automático para recuperar conexión
+        process.exit(1); 
+    });
+
+    try { await client.initialize(); } catch (e) { console.error(e); process.exit(1); }
+}
+
+// --- TU FUNCIÓN ORIGINAL PARA GENERAR EL PDF ---
+async function generarYEnviarPDF(item, clientInstance) {
     try {
         console.log(`📄 Generando PDF en cola para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
@@ -159,10 +225,10 @@ async function generarYEnviarPDF(item, client) {
         if (chatId.length === 10) chatId = '52' + chatId;
         chatId = chatId + '@c.us';
         
-        // USAMOS EL MENSAJE DINÁMICO QUE VIENE DE LA LAMBDA
         const captionFinal = item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠";
 
-        await client.sendMessage(chatId, media, { caption: captionFinal });
+        // Usamos clientInstance porque 'client' ahora es dinámico
+        await clientInstance.sendMessage(chatId, media, { caption: captionFinal });
         console.log(`✅ PDF enviado a ${item.numero}`);
         return true;
 
@@ -172,12 +238,12 @@ async function generarYEnviarPDF(item, client) {
     }
 }
 
-// --- PROCESADOR DE COLA MAESTRO ---
+// --- TU PROCESADOR DE COLA MAESTRO (CON AJUSTES DE MEMORIA) ---
 const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
-    if (!isClientReady) return; 
+    if (!isClientReady || !client) return; 
 
-    // ▼▼▼ AQUÍ ESTÁ LA PAUSA DE MINUTOS (10 a 20) ▼▼▼
+    // ▼▼▼ TU LÓGICA DE PAUSA (INTACTA) ▼▼▼
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
@@ -187,7 +253,7 @@ const processQueue = async () => {
         setTimeout(() => { console.log('⚡ Volviendo...'); processQueue(); }, minutosPausa * 60 * 1000);
         return;
     }
-    // ▲▲▲ FIN PAUSA MINUTOS ▲▲▲
+    // ▲▲▲ FIN PAUSA ▲▲▲
 
     isProcessingQueue = true;
     const item = messageQueue[0];
@@ -202,7 +268,6 @@ const processQueue = async () => {
 
         console.log(`⏳ Procesando ${item.numero}...`);
         
-        // --- TIEMPO DE ESPERA "ESCRIBIENDO" (4 a 8 seg) ---
         const typingDelay = getRandomDelay(4000, 8000);
         await new Promise(r => setTimeout(r, typingDelay));
 
@@ -239,24 +304,61 @@ const processQueue = async () => {
     } catch (error) {
         console.error('❌ Error:', error.message);
         item.resolve({ success: false, error: error.message });
-        if(error.message && (error.message.includes('Protocol') || error.message.includes('destroyed'))) {
+        
+        // --- DETECCIÓN DE CRASH DE MEMORIA (TU LÓGICA) ---
+        if (error.message && (
+            error.message.includes('Protocol') || 
+            error.message.includes('destroyed') || 
+            error.message.includes('timed out')
+        )) {
+            console.log('💀 Error crítico (Memoria/Navegador). Reiniciando...');
             process.exit(1); 
         }
     } finally {
         messageQueue.shift(); 
-        
-        // --- TIEMPO DE ESPERA POST-ENVÍO (60 a 90 seg) ---
         const shortPause = getRandomDelay(60000, 90000); 
         console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
         setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
     }
 };
 
-// RUTA 1: ENVIAR SIMPLE
+// --- RUTAS API (NUEVAS Y VIEJAS) ---
+
+// 1. SELECTOR DE TURNO MANUAL (PARA FORZAR SI QUIERES)
+app.post('/iniciar-manana', authMiddleware, async (req, res) => {
+    if (activeSessionName === 'morning' && isClientReady) return res.json({ msg: 'Turno Mañana ya activo' });
+    startSession('morning');
+    res.json({ success: true, message: 'Iniciando Turno Mañana...' });
+});
+
+app.post('/iniciar-tarde', authMiddleware, async (req, res) => {
+    if (activeSessionName === 'afternoon' && isClientReady) return res.json({ msg: 'Turno Tarde ya activo' });
+    startSession('afternoon');
+    res.json({ success: true, message: 'Iniciando Turno Tarde...' });
+});
+
+// 2. BORRAR SESIONES (BOTONES ROJOS DE EMERGENCIA)
+app.post('/borrar-manana', authMiddleware, async (req, res) => {
+    if (activeSessionName === 'morning') await client.destroy();
+    const p = './data/session-client-morning'; 
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+    res.json({ success: true, message: '🗑 Sesión Mañana ELIMINADA' });
+    if (activeSessionName === 'morning') setTimeout(() => process.exit(0), 1000);
+});
+
+app.post('/borrar-tarde', authMiddleware, async (req, res) => {
+    if (activeSessionName === 'afternoon') await client.destroy();
+    const p = './data/session-client-afternoon';
+    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+    res.json({ success: true, message: '🗑 Sesión Tarde ELIMINADA' });
+    if (activeSessionName === 'afternoon') setTimeout(() => process.exit(0), 1000);
+});
+
+// 3. RUTAS DE ENVÍO (LAS QUE USA TU LAMBDA)
 app.post('/enviar', authMiddleware, (req, res) => {
     const { numero, mensaje, media_url } = req.body;
     
-    if (!isClientReady) return res.status(503).json({ success: false, error: '⛔ BOT APAGADO.' });
+    if (!isClientReady || !client) return res.status(503).json({ success: false, error: '⛔ NINGÚN TURNO ACTIVO.' });
     if (!numero || numero.length < 10) return res.status(400).json({ error: 'Número inválido' });
     
     const office = checkOfficeHours();
@@ -273,11 +375,10 @@ app.post('/enviar', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// RUTA 2: ENVIAR TICKET PDF (ENCOLADOS)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     const { numero, datos_ticket, foto_evidencia, mensaje } = req.body; 
 
-    if (!isClientReady) return res.status(503).json({ success: false, error: 'Bot no listo' });
+    if (!isClientReady || !client) return res.status(503).json({ success: false, error: 'Bot no listo' });
 
     res.json({ success: true, message: 'PDF Encolado...' });
 
@@ -291,40 +392,46 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     processQueue();
 });
 
-// APIs de Control
-app.post('/iniciar-bot', authMiddleware, async (req, res) => {
-    if (isClientReady) return res.json({ msg: 'Ya estaba encendido' });
-    console.log('🟢 Iniciando motor...');
-    clientInitialized = true;
-    try { await client.initialize(); res.json({ success: true }); } 
-    catch (e) { console.error(e); res.status(500).json({ error: e.message }); }
-});
-
+// APIs de Control Extra
 app.post('/detener-bot', authMiddleware, async (req, res) => {
     console.log('🔴 Deteniendo...');
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
 });
-
-app.post('/reset-session', authMiddleware, async (req, res) => {
-    try {
-        try { await client.destroy(); } catch(e) {}
-        if (fs.existsSync('./data')) fs.rmSync('./data', { recursive: true, force: true });
-        res.json({ success: true });
-        setTimeout(() => process.exit(0), 1000);
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.post('/limpiar-cola', authMiddleware, (req, res) => { messageQueue = []; res.json({ success: true }); });
 app.get('/', (req, res) => res.render('index'));
-app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length }));
+app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length, session: activeSessionName }));
 
 // EVENTOS SOCKET
-client.on('qr', (qr) => { console.log('📸 QR'); io.emit('qr', qr); io.emit('status', '📸 ESCANEA AHORA'); });
-client.on('ready', () => { isClientReady = true; io.emit('status', '✅ BOT ACTIVO'); io.emit('connected', { name: client.info.pushname, number: client.info.wid.user }); processQueue(); });
-client.on('authenticated', () => io.emit('status', '🔑 Cargando...'));
-client.on('disconnected', () => { isClientReady = false; io.emit('status', '❌ Desconectado'); if (clientInitialized) process.exit(0); });
+io.on('connection', (socket) => {
+    if(activeSessionName) socket.emit('status', isClientReady ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` : `⏳ Cargando ${activeSessionName}...`);
+    else socket.emit('status', '💤 Iniciando sistema...');
+});
 
+// --- ARRANQUE DEL SERVIDOR Y LÓGICA AUTOMÁTICA ---
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR FINAL INICIADO EN PUERTO ${PORT}`);
+
+    // ▼▼▼ AQUÍ ESTÁ LA MAGIA AUTOMÁTICA (RELOJ) ▼▼▼
+    const hora = moment().tz('America/Mexico_City').hour();
+    console.log(`🕒 HORA DETECTADA (CDMX): ${hora}:00`);
+
+    if (hora >= 8 && hora < 12) {
+        console.log('🌞 ES DE MAÑANA -> CARGANDO SESIÓN MAÑANA');
+        startSession('morning');
+    } else {
+        console.log('🌙 ES TARDE/NOCHE -> CARGANDO SESIÓN TARDE');
+        startSession('afternoon');
+    }
+
+    // ▼▼▼ CRONÓMETRO PARA EL CAMBIO DE TURNO (12:00 PM) ▼▼▼
+    setInterval(() => {
+        const h = moment().tz('America/Mexico_City').hour();
+        const m = moment().tz('America/Mexico_City').minute();
+        // Si son las 12:00 PM en punto y estoy en la sesión de la mañana...
+        if (h === 12 && m === 0 && activeSessionName === 'morning') {
+            console.log('🕛 HORA DEL CAMBIO DE TURNO. REINICIANDO...');
+            process.exit(0); // Esto mata al bot, Render lo prende, y al prender cargará la tarde.
+        }
+    }, 60000); // Revisa cada minuto
 });
