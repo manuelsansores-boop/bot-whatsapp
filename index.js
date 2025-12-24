@@ -8,18 +8,7 @@ const moment = require('moment-timezone');
 const puppeteer = require('puppeteer');
 
 
-const { execSync } = require('child_process'); // <--- AGREGA ESTA LÍNEA
 
-// ▼▼▼ FIX DE EMERGENCIA: INSTALAR CHROME SI FALTA ▼▼▼
-try {
-    console.log("🛠️ Verificando instalación de Chrome...");
-    // Esto obliga a Render a descargar el navegador si no lo encuentra
-    execSync("npx puppeteer browsers install chrome", { stdio: 'inherit' });
-    console.log("✅ Chrome verificado/instalado correctamente.");
-} catch (error) {
-    console.error("⚠️ Error intentando instalar Chrome:", error.message);
-}
-// ▲▲▲ FIN DEL FIX ▲▲▲
 
 // ▼▼▼ FIX FFMPEG ▼▼▼
 const ffmpegPath = require('ffmpeg-static');
