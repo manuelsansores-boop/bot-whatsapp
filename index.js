@@ -292,14 +292,34 @@ const processQueue = async () => {
             item.resolve({ success: false, error: 'No registrado' });
         }
     } catch (error) {
-        console.error('❌ Error:', error.message);
+        console.error('❌ Error procesando cola:', error.message);
         item.resolve({ success: false, error: error.message });
-        if (error.message && (error.message.includes('Protocol') || error.message.includes('timed out'))) {
-            process.exit(1); 
+
+        // ▼▼▼ BLOQUEO ANTI-ZOMBIE (MATAR AL INSTANTE) ▼▼▼
+        // Si sale cualquiera de estos, matamos el proceso YA.
+        const erroresFatales = [
+            'Target closed',
+            'detached Frame',
+            'Protocol error',
+            'Session closed',
+            'browser has disconnected',
+            'Evaluation failed'
+        ];
+
+        // Si el mensaje de error tiene alguna de esas frases...
+        if (erroresFatales.some(frase => error.message.includes(frase))) {
+            console.log('💀 ERROR CRÍTICO DETECTADO: El navegador murió. Reiniciando servidor AHORA...');
+            process.exit(1); // <--- ESTO LO REINICIA AL PRIMER FALLO
         }
+        // ▲▲▲ FIN BLINDAJE ▲▲▲
+        
     } finally {
         messageQueue.shift(); 
-        setTimeout(() => { isProcessingQueue = false; processQueue(); }, getRandomDelay(60000, 90000));
+        
+        // Pausa normal entre mensajes (60 a 90 segundos)
+        const shortPause = getRandomDelay(60000, 90000); 
+        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
+        setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
     }
 };
 
