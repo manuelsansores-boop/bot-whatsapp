@@ -5,10 +5,35 @@ const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment-timezone'); 
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer'); 
+const { execSync } = require('child_process');
 
+// ▼▼▼ FIX SUPREMO: INSTALAR Y ENCONTRAR CHROME AUTOMÁTICAMENTE ▼▼▼
+let RUTA_CHROME_DETECTADA = null;
 
-
+try {
+    console.log("🛠️ Asegurando instalación de Chrome...");
+    // 1. Instalamos la versión ESTABLE (que es la v131 actualmente)
+    execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
+    
+    // 2. Buscamos manualmente dónde demonios se guardó en la caché
+    const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
+    if (fs.existsSync(cacheDir)) {
+        const carpetas = fs.readdirSync(cacheDir); // Ej: linux-131.0.6778.204
+        for (const carpeta of carpetas) {
+            // Buscamos el ejecutable dentro de la carpeta de versión
+            const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
+            if (fs.existsSync(posibleRuta)) {
+                RUTA_CHROME_DETECTADA = posibleRuta;
+                console.log(`✅ Chrome encontrado manualmente en: ${RUTA_CHROME_DETECTADA}`);
+                break;
+            }
+        }
+    }
+} catch (error) {
+    console.error("⚠️ Alerta en instalación de Chrome:", error.message);
+}
+// ▲▲▲ FIN DEL FIX ▲▲▲
 
 // ▼▼▼ FIX FFMPEG ▼▼▼
 const ffmpegPath = require('ffmpeg-static');
@@ -36,6 +61,9 @@ let isProcessingQueue = false;
 let mensajesEnRacha = 0;
 let limiteRachaActual = 5; 
 
+// ▼▼▼ MEMORIA ANTI-DUPLICADOS (RESTAURADA) ▼▼▼
+const ticketsProcesados = new Set(); 
+
 // MIDDLEWARE
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -58,13 +86,6 @@ function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
     
     // LOGICA PING-PONG (Cambio cada 2 horas)
-    // 08-09: Chip A
-    // 10-11: Chip B
-    // 12-13: Chip A
-    // 14-15: Chip B
-    // 16-17: Chip A
-    // Resto: Fuera de horario (usamos A por defecto o cerramos)
-
     if (hora >= 8 && hora < 10) return 'chip-a';
     if (hora >= 10 && hora < 12) return 'chip-b';
     if (hora >= 12 && hora < 14) return 'chip-a';
@@ -74,8 +95,7 @@ function getTurnoActual() {
     return 'chip-a'; // Default fuera de horario
 }
 
-// --- FUNCIÓN PARA INICIAR SESIÓN ---
-// --- FUNCIÓN PARA INICIAR SESIÓN (MODO EMERGENCIA) ---
+// --- FUNCIÓN PARA INICIAR SESIÓN (MODO EMERGENCIA + CHROME FIX) ---
 async function startSession(sessionName) {
     if (client) {
         try { await client.destroy(); } catch(e) {}
@@ -94,21 +114,31 @@ async function startSession(sessionName) {
         if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
     } catch (errLock) {}
 
+    // Configuración de Puppeteer
+    const puppeteerConfig = {
+        headless: true,
+        protocolTimeout: 300000, 
+        args: [
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
+            '--single-process', '--disable-gpu', '--js-flags="--max-old-space-size=1024"' 
+        ]
+    };
+
+    // ▼▼▼ INYECCIÓN DE LA RUTA DE CHROME ENCONTRADA ▼▼▼
+    if (RUTA_CHROME_DETECTADA) {
+        console.log(`💉 Usando Chrome encontrado en: ${RUTA_CHROME_DETECTADA}`);
+        puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
+    }
+    // ▲▲▲ FIN INYECCIÓN ▲▲▲
+
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         authStrategy: new LocalAuth({ 
             clientId: `client-${sessionName}`, 
             dataPath: './data' 
         }),
-        puppeteer: {
-            headless: true,
-            protocolTimeout: 300000, 
-            args: [
-                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
-                '--single-process', '--disable-gpu', '--js-flags="--max-old-space-size=1024"' 
-            ]
-        },
+        puppeteer: puppeteerConfig, // Usamos la config inyectada
         qrMaxRetries: 5,
         ffmpegPath: ffmpegPath
     });
@@ -149,13 +179,13 @@ async function startSession(sessionName) {
         process.exit(1); 
     });
 
-    // ▼▼▼ AQUÍ ESTÁ LA SOLUCIÓN AL ERROR DEL CANDADO ▼▼▼
+    // ▼▼▼ MANEJO DE ERRORES AL INICIALIZAR ▼▼▼
     try { 
         await client.initialize(); 
     } catch (e) { 
         console.error('❌ Error al inicializar:', e.message);
         
-        // Si detectamos el error Code: 21 o SingletonLock
+        // Si detectamos el error Code: 21 o SingletonLock o Carpeta en Uso
         if (e.message.includes('Code: 21') || e.message.includes('SingletonLock') || e.message.includes('in use by another Chromium')) {
              console.log('💀 CARPETA CORRUPTA DETECTADA. BORRANDO TODO PARA DESTRABAR...');
              
@@ -179,7 +209,7 @@ async function startSession(sessionName) {
     }
 }
 
-// --- GENERADOR PDF (TU CÓDIGO INTACTO) ---
+// --- GENERADOR PDF ---
 async function generarYEnviarPDF(item, clientInstance) {
     try {
         console.log(`📄 Generando PDF en cola para ${item.numero}...`);
@@ -278,7 +308,7 @@ async function generarYEnviarPDF(item, clientInstance) {
     }
 }
 
-// --- PROCESADOR DE COLA (TU CÓDIGO INTACTO) ---
+// --- PROCESADOR DE COLA ---
 const processQueue = async () => {
     if (isProcessingQueue || messageQueue.length === 0) return;
     if (!isClientReady || !client) return; 
@@ -331,7 +361,6 @@ const processQueue = async () => {
         item.resolve({ success: false, error: error.message });
 
         // ▼▼▼ BLOQUEO ANTI-ZOMBIE (MATAR AL INSTANTE) ▼▼▼
-        // Si sale cualquiera de estos, matamos el proceso YA.
         const erroresFatales = [
             'Target closed',
             'detached Frame',
@@ -341,17 +370,14 @@ const processQueue = async () => {
             'Evaluation failed'
         ];
 
-        // Si el mensaje de error tiene alguna de esas frases...
         if (erroresFatales.some(frase => error.message.includes(frase))) {
             console.log('💀 ERROR CRÍTICO DETECTADO: El navegador murió. Reiniciando servidor AHORA...');
-            process.exit(1); // <--- ESTO LO REINICIA AL PRIMER FALLO
+            process.exit(1); 
         }
         // ▲▲▲ FIN BLINDAJE ▲▲▲
         
     } finally {
         messageQueue.shift(); 
-        
-        // Pausa normal entre mensajes (60 a 90 segundos)
         const shortPause = getRandomDelay(60000, 90000); 
         console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s...`);
         setTimeout(() => { isProcessingQueue = false; processQueue(); }, shortPause);
@@ -360,7 +386,6 @@ const processQueue = async () => {
 
 // --- RUTAS API ---
 
-// BOTONES MANUALES (SOLO PARA CONFIGURACIÓN O EMERGENCIAS)
 app.post('/iniciar-chip-a', authMiddleware, (req, res) => { startSession('chip-a'); res.json({success:true}); });
 app.post('/iniciar-chip-b', authMiddleware, (req, res) => { startSession('chip-b'); res.json({success:true}); });
 
@@ -377,21 +402,46 @@ app.post('/borrar-chip-b', authMiddleware, (req, res) => {
     if(activeSessionName === 'chip-b') process.exit(0);
 });
 
-// RUTAS DE ENVÍO
 app.post('/enviar', authMiddleware, (req, res) => {
     if (!isClientReady) return res.status(503).json({ error: 'Bot dormido' });
+    
+    // Check Hora
+    const office = checkOfficeHours();
+    if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada (6:00 PM)' });
+
     messageQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
     processQueue();
     res.json({ success: true });
 });
+
+// ENVÍO PDF (CON ANTI-DUPLICADOS Y CHEQUEO DE HORA)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     if (!isClientReady) return res.status(503).json({ error: 'Bot dormido' });
+
+    // 1. Checar Hora
+    const office = checkOfficeHours();
+    if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada (6:00 PM)' });
+
+    // 2. ▼▼▼ LOGICA ANTI-DUPLICADOS (IDEMPOTENCIA) ▼▼▼
+    const { datos_ticket } = req.body;
+    const folioUnico = datos_ticket?.folio; 
+
+    if (folioUnico && ticketsProcesados.has(folioUnico)) {
+        console.log(`🚫 DUPLICADO BLOQUEADO: Ticket ${folioUnico} ya se procesó hace un momento.`);
+        return res.json({ success: true, message: 'Duplicado ignorado (Idempotencia)' });
+    }
+
+    if (folioUnico) {
+        ticketsProcesados.add(folioUnico);
+        setTimeout(() => ticketsProcesados.delete(folioUnico), 5 * 60 * 1000);
+    }
+    // ▲▲▲ FIN LOGICA ▼▼▼
+
     messageQueue.push({ type: 'pdf', ...req.body, pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, resolve: () => {} });
     processQueue();
     res.json({ success: true });
 });
 
-// Control General
 app.post('/detener-bot', authMiddleware, async (req, res) => {
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
@@ -406,7 +456,7 @@ io.on('connection', (socket) => {
     else socket.emit('status', '💤 Iniciando sistema...');
 });
 
-// --- ARRANQUE Y LÓGICA DE RELOJ (PING-PONG) ---
+// --- ARRANQUE ---
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR PING-PONG LISTO EN PUERTO ${PORT}`);
 
@@ -415,13 +465,12 @@ server.listen(PORT, () => {
     console.log(`🕒 HORA DETECTADA: ${moment().tz('America/Mexico_City').format('HH:mm')} -> TOCA ${turnoCorrecto.toUpperCase()}`);
     startSession(turnoCorrecto);
 
-    // 2. CRONÓMETRO DE CAMBIO (Chequeo cada minuto)
+    // 2. CRONÓMETRO DE CAMBIO
     setInterval(() => {
         const turnoDeberSer = getTurnoActual();
-        // Si el turno que debería ser NO es el que está activo...
         if (activeSessionName && activeSessionName !== turnoDeberSer) {
             console.log(`🔀 CAMBIO DE TURNO DETECTADO (${activeSessionName} -> ${turnoDeberSer}). REINICIANDO...`);
-            process.exit(0); // Reinicio para cambiar de chip
+            process.exit(0); 
         }
     }, 60000); 
 });
