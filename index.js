@@ -72,6 +72,7 @@ function getTurnoActual() {
 }
 
 // --- FUNCIÓN PARA INICIAR SESIÓN ---
+// --- FUNCIÓN PARA INICIAR SESIÓN (CON ROMPE-CANDADOS) ---
 async function startSession(sessionName) {
     if (client) {
         try { await client.destroy(); } catch(e) {}
@@ -83,10 +84,24 @@ async function startSession(sessionName) {
     console.log(`🔵 INICIANDO PERFIL: ${sessionName.toUpperCase()}`);
     io.emit('status', `⏳ Cargando Perfil: ${sessionName.toUpperCase()}...`);
 
+    // ▼▼▼ NUEVO: ELIMINAR CANDADO FANTASMA (FIX CODE 21) ▼▼▼
+    // Esto borra el archivo que hace creer a Chrome que ya está abierto
+    try {
+        const folderPath = `./data/session-client-${sessionName}`;
+        const lockFile = path.join(folderPath, 'SingletonLock');
+        if (fs.existsSync(lockFile)) {
+            console.log(`🔓 CANDADO ENCONTRADO EN ${sessionName}. ELIMINANDO...`);
+            fs.unlinkSync(lockFile); // <--- Aquí rompemos el candado
+        }
+    } catch (errLock) {
+        console.error('⚠️ No se pudo eliminar el Lock (tal vez no existía), continuamos...');
+    }
+    // ▲▲▲ FIN DEL FIX ▲▲▲
+
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         authStrategy: new LocalAuth({ 
-            clientId: `client-${sessionName}`, // Esto crea carpetas separadas: client-chip-a y client-chip-b
+            clientId: `client-${sessionName}`, 
             dataPath: './data' 
         }),
         puppeteer: {
@@ -122,7 +137,7 @@ async function startSession(sessionName) {
 
     // AUTO-LIMPIEZA
     client.on('auth_failure', async () => {
-        console.error('⛔ ERROR DE CREDENCIALES (Baneo/Logout). Limpiando...');
+        console.error('⛔ ERROR DE CREDENCIALES. Limpiando...');
         io.emit('status', '⛔ CREDENCIALES RECHAZADAS. Reiniciando...');
         const folderPath = `./data/session-client-${sessionName}`; 
         try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e) {}
@@ -134,14 +149,20 @@ async function startSession(sessionName) {
         isClientReady = false; 
         io.emit('status', '❌ Desconectado'); 
         if (reason === 'LOGOUT' || reason === 'NAVIGATION') {
-             console.log('🧹 Limpiando sesión por Logout manual...');
              const folderPath = `./data/session-client-${sessionName}`;
              try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e){}
         }
         process.exit(1); 
     });
 
-    try { await client.initialize(); } catch (e) { console.error(e); process.exit(1); }
+    try { await client.initialize(); } catch (e) { 
+        console.error('❌ Error al inicializar:', e.message);
+        // Si falla por el candado a pesar del fix, forzamos reinicio
+        if (e.message.includes('Code: 21') || e.message.includes('SingletonLock')) {
+             console.log('💀 El candado sigue molestando. Reiniciando proceso...');
+             process.exit(1);
+        }
+    }
 }
 
 // --- GENERADOR PDF (TU CÓDIGO INTACTO) ---
