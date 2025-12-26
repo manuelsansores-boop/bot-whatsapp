@@ -3,91 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Ping-Pong v5</title>
+    <title>Panel Ping-Pong v6 (Rescue)</title>
     <style>
         body { font-family: sans-serif; background: #f0f2f5; padding: 20px; text-align: center; }
         .card { background: white; max-width: 650px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
         
-        /* ESTADOS */
         .status { padding: 15px; margin: 20px 0; border-radius: 8px; font-weight: bold; font-size: 1.1em; transition: 0.3s; }
         .ready { background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
         .wait { background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
         .error { background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
-        .coffee { background: #cff4fc; color: #055160; border: 2px dashed #0dcaf0; }
         .idle { background: #e2e3e5; color: #41464b; }
 
-        /* BOTONES */
-        .btn { padding: 10px 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; margin: 5px; color: white; font-weight: bold; width: 90%; }
+        .btn { padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; margin: 5px; color: white; font-weight: bold; width: 90%; }
         .btn:hover { opacity: 0.9; }
-
         .btn-green { background: #198754; width: auto; min-width: 120px; }
         .btn-stop { background: #212529; width: auto; min-width: 120px; }
         .btn-orange { background: #fd7e14; }
-        
         .btn-chip-a { background: #0d6efd; }
         .btn-chip-b { background: #6610f2; }
         .btn-danger { background: #dc3545; font-size: 11px; margin-top: 5px; opacity: 0.8; }
 
-        /* GRID TURNOS */
         .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
         .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 10px; background: #f9f9f9; }
         .turno-title { font-weight: bold; font-size: 1.2em; display: block; margin-bottom: 5px; }
         .horarios { font-size: 12px; color: #555; margin-bottom: 10px; background: #eee; padding: 5px; border-radius: 4px;}
-
         .box-a { border-top: 5px solid #0d6efd; }
         .box-b { border-top: 5px solid #6610f2; }
 
-        /* LOGS */
         .log { text-align: left; background: #212529; color: #00ff00; padding: 10px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 11px; margin-top: 20px; border-radius: 5px; }
         input { padding: 10px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 5px; text-align: center; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🏓 Bot Ping-Pong (2 Chips)</h1>
-        <p style="color:#666; font-size:13px;">Cambio automático cada 2 horas</p>
+        <h1>🏓 Bot Ping-Pong v6</h1>
+        <p style="color:#666; font-size:13px;">Con Sistema de Rescate Automático</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         
         <input type="password" id="token" placeholder="Token Secreto">
         
         <div>
-            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR SISTEMA</button>
+            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR (RESCUE CHECK)</button>
             <button class="btn btn-stop" onclick="cmd('detener-bot')">⏹ APAGAR TODO</button>
         </div>
 
         <div class="grid-turnos">
-            
             <div class="turno-box box-a">
                 <span class="turno-title">🔵 CHIP A</span>
-                <div class="horarios">
-                    8:00 - 10:00<br>
-                    12:00 - 14:00<br>
-                    16:00 - 18:00
-                </div>
-                <button class="btn btn-chip-a" onclick="cmd('iniciar-chip-a')">▶ Forzar Chip A</button>
+                <div class="horarios">8:00-10:00 | 12:00-14:00 | 16:00-18:00</div>
+                <button class="btn btn-chip-a" onclick="cmd('iniciar-chip-a')">▶ Forzar/Escanear A</button>
                 <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-a', 'CHIP A')">🗑 BORRAR MEMORIA A</button>
             </div>
-
             <div class="turno-box box-b">
                 <span class="turno-title">🟣 CHIP B</span>
-                <div class="horarios">
-                    10:00 - 12:00<br>
-                    14:00 - 16:00
-                </div>
-                <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar Chip B</button>
+                <div class="horarios">10:00-12:00 | 14:00-16:00</div>
+                <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar/Escanear B</button>
                 <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-b', 'CHIP B')">🗑 BORRAR MEMORIA B</button>
             </div>
-
         </div>
 
         <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width:100%">🧹 Limpiar Cola</button>
 
         <div id="qr-area" style="margin-top: 20px;"></div>
-        
-        <div class="log" id="logs">
-            <div>> Panel Ping-Pong listo...</div>
-        </div>
+        <div class="log" id="logs"><div>> Panel listo...</div></div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -118,9 +97,7 @@
         }
 
         function confirmarBorrado(action, nombre) {
-            if(confirm(`¿Seguro que quieres borrar la memoria del ${nombre}?\n\nTendrás que escanearlo de nuevo.`)) {
-                cmd(action);
-            }
+            if(confirm(`¿Seguro que quieres borrar la memoria del ${nombre}?`)) cmd(action);
         }
 
         socket.on('status', (msg) => {
@@ -128,13 +105,13 @@
             statusBox.className = 'status'; 
             if(msg.includes('ACTIVO')) statusBox.classList.add('ready');
             else if(msg.includes('Cargando') || msg.includes('ESCANEA')) statusBox.classList.add('wait');
-            else if(msg.includes('Error') || msg.includes('Desconectado')) statusBox.classList.add('error');
+            else if(msg.includes('Error') || msg.includes('Desconectado') || msg.includes('DETENIDO')) statusBox.classList.add('error');
             else statusBox.classList.add('idle');
             addLog(msg);
         });
 
         socket.on('qr', (code) => {
-            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA ESTE CHIP</p></div>`;
+            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA AHORA</p></div>`;
         });
         
         socket.on('connected', (u) => {

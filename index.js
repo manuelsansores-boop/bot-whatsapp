@@ -13,10 +13,8 @@ let RUTA_CHROME_DETECTADA = null;
 
 try {
     console.log("🛠️ Asegurando instalación de Chrome...");
-    // 1. Instalamos la versión ESTABLE
     execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
     
-    // 2. Buscamos manualmente dónde se guardó
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
     if (fs.existsSync(cacheDir)) {
         const carpetas = fs.readdirSync(cacheDir);
@@ -37,7 +35,6 @@ try {
 // ▼▼▼ FIX FFMPEG ▼▼▼
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
-// ▲▲▲ FIN FIX ▲▲▲
 
 const app = express();
 const server = http.createServer(app);
@@ -53,14 +50,13 @@ app.set('view engine', 'ejs');
 
 // --- VARIABLES DE ESTADO ---
 let client = null; 
-let activeSessionName = null; // 'chip-a' o 'chip-b'
+let activeSessionName = null; 
 let isClientReady = false;
 let messageQueue = [];
 let isProcessingQueue = false;
 let mensajesEnRacha = 0;
 let limiteRachaActual = 5; 
-
-// (SE ELIMINÓ LA VARIABLE ticketsProcesados PARA PERMITIR DUPLICADOS)
+let modoRescateActivo = false; // Indica si estamos cubriendo un turno ajeno
 
 // MIDDLEWARE
 const authMiddleware = (req, res, next) => {
@@ -74,31 +70,42 @@ const authMiddleware = (req, res, next) => {
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 const checkOfficeHours = () => { 
     const hora = moment().tz('America/Mexico_City').hour();
-    // Solo permitir envíos de 8 AM a 6 PM (18:00)
     if (hora >= 8 && hora < 18) return { isOpen: true }; 
     return { isOpen: false }; 
 };
 
-// --- FUNCIÓN PARA DETERMINAR QUÉ CHIP TOCA ---
+// --- DETERMINAR TURNO ---
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
-    // LOGICA PING-PONG (Cambio cada 2 horas)
     if (hora >= 8 && hora < 10) return 'chip-a';
     if (hora >= 10 && hora < 12) return 'chip-b';
     if (hora >= 12 && hora < 14) return 'chip-a';
     if (hora >= 14 && hora < 16) return 'chip-b';
     if (hora >= 16 && hora < 18) return 'chip-a';
-    return 'chip-a'; // Default fuera de horario
+    return 'chip-a'; 
 }
 
-// --- FUNCIÓN PARA VERIFICAR SI EXISTE CARPETA DE SESIÓN ---
+// --- VERIFICAR SI EXISTE CARPETA ---
 function existeSesion(sessionName) {
     const folderPath = `./data/session-client-${sessionName}`;
     return fs.existsSync(folderPath);
 }
 
-// --- FUNCIÓN PARA INICIAR SESIÓN ---
-async function startSession(sessionName) {
+// --- BORRAR CARPETA ---
+function borrarSesion(sessionName) {
+    const folderPath = `./data/session-client-${sessionName}`;
+    try {
+        if (fs.existsSync(folderPath)) {
+            fs.rmSync(folderPath, { recursive: true, force: true });
+            console.log(`🗑️ Carpeta ${sessionName} eliminada por corrupción.`);
+        }
+    } catch (e) { console.error(`Error borrando ${sessionName}:`, e); }
+}
+
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN ---
+// isManual = TRUE (Lo iniciaste con botón, debe mostrar QR si falla)
+// isManual = FALSE (Lo inició el reloj, si falla debe activar RESCATE)
+async function startSession(sessionName, isManual = false) {
     if (client) {
         try { await client.destroy(); } catch(e) {}
         client = null;
@@ -106,17 +113,16 @@ async function startSession(sessionName) {
     }
 
     activeSessionName = sessionName;
-    console.log(`🔵 INICIANDO PERFIL: ${sessionName.toUpperCase()}`);
-    io.emit('status', `⏳ Cargando Perfil: ${sessionName.toUpperCase()}...`);
+    console.log(`🔵 INICIANDO PERFIL: ${sessionName.toUpperCase()} (Modo: ${isManual ? 'MANUAL' : 'AUTO'})`);
+    io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
-    // Intento preventivo de borrar candado
+    // Fix Lock
     try {
         const folderPath = `./data/session-client-${sessionName}`;
         const lockFile = path.join(folderPath, 'SingletonLock');
         if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
     } catch (errLock) {}
 
-    // Configuración de Puppeteer
     const puppeteerConfig = {
         headless: true,
         protocolTimeout: 300000, 
@@ -127,73 +133,88 @@ async function startSession(sessionName) {
         ]
     };
 
-    // Inyección de ruta Chrome
-    if (RUTA_CHROME_DETECTADA) {
-        console.log(`💉 Usando Chrome encontrado en: ${RUTA_CHROME_DETECTADA}`);
-        puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
-    }
+    if (RUTA_CHROME_DETECTADA) puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
 
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        authStrategy: new LocalAuth({ 
-            clientId: `client-${sessionName}`, 
-            dataPath: './data' 
-        }),
+        authStrategy: new LocalAuth({ clientId: `client-${sessionName}`, dataPath: './data' }),
         puppeteer: puppeteerConfig,
-        qrMaxRetries: 5,
+        qrMaxRetries: isManual ? 5 : 0, // SI ES AUTO, 0 REINTENTOS (Falla rápido)
         ffmpegPath: ffmpegPath
     });
 
-    client.on('qr', (qr) => { 
-        console.log('📸 SE REQUIERE ESCANEO NUEVO'); 
-        io.emit('qr', qr); 
-        io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+    // ▼▼▼ LÓGICA DE RESCATE EN QR ▼▼▼
+    client.on('qr', async (qr) => { 
+        if (isManual) {
+            // SI ES MANUAL: Muestra el QR para escanear
+            console.log('📸 SE REQUIERE ESCANEO NUEVO (Modo Manual)'); 
+            io.emit('qr', qr); 
+            io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+        } else {
+            // SI ES AUTO: ¡ALERTA! La sesión está podrida.
+            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO. La sesión no sirve.`);
+            
+            // 1. Matar cliente actual
+            try { await client.destroy(); } catch(e){}
+            client = null;
+
+            // 2. Borrar carpeta corrupta
+            borrarSesion(sessionName);
+
+            // 3. ACTIVAR EL OTRO CHIP (RESCATE)
+            const chipRescate = (sessionName === 'chip-a') ? 'chip-b' : 'chip-a';
+            
+            // Evitar bucle infinito (si ya estamos en rescate y falla también el otro)
+            if (modoRescateActivo) {
+                console.log('💀 AMBOS CHIPS FALLARON. APAGANDO SISTEMA.');
+                io.emit('status', '💀 ERROR CRÍTICO: AMBOS CHIPS SIN SESIÓN.');
+                return; // Se queda muerto
+            }
+
+            console.log(`🚑 ACTIVANDO PROTOCOLO DE RESCATE: INTENTANDO ${chipRescate.toUpperCase()}`);
+            modoRescateActivo = true; // Marcamos que estamos en emergencia
+            
+            // Intentamos arrancar el otro chip en modo AUTO (para que también cheque si sirve)
+            if (existeSesion(chipRescate)) {
+                startSession(chipRescate, false);
+            } else {
+                console.log(`❌ NO HAY CHIP DE RESPALDO (${chipRescate}). SISTEMA DETENIDO.`);
+                io.emit('status', '⚠️ SISTEMA DETENIDO: FALTAN AMBAS SESIONES.');
+            }
+        }
     });
 
     client.on('ready', () => { 
         isClientReady = true; 
+        modoRescateActivo = false; // Si conecta, quitamos la bandera de emergencia
         console.log(`✅ ${sessionName} LISTO Y CONECTADO`);
         io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`); 
-        io.emit('connected', { 
-            name: client.info.pushname, 
-            number: client.info.wid.user, 
-            session: sessionName 
-        }); 
+        io.emit('connected', { name: client.info.pushname, number: client.info.wid.user, session: sessionName }); 
         processQueue(); 
     });
 
-    client.on('auth_failure', async () => {
-        io.emit('status', '⛔ FALLO DE AUTH. Reiniciando...');
-        const folderPath = `./data/session-client-${sessionName}`; 
-        try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e) {}
-        setTimeout(() => process.exit(1), 2000); 
+    client.on('auth_failure', () => {
+        console.log('⛔ FALLO DE AUTH.');
+        if (!isManual) borrarSesion(sessionName); // Si falla auth en auto, borramos
+        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
+        // El reinicio lo manejará el proceso manual o el rescate
     });
 
-    client.on('disconnected', async (reason) => { 
+    client.on('disconnected', (reason) => { 
         console.log('❌ Desconectado:', reason);
         isClientReady = false; 
         io.emit('status', '❌ Desconectado'); 
-        if (reason === 'LOGOUT' || reason === 'NAVIGATION') {
-             const folderPath = `./data/session-client-${sessionName}`;
-             try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(e){}
-        }
-        process.exit(1); 
+        if (reason === 'LOGOUT') borrarSesion(sessionName);
     });
 
     try { 
         await client.initialize(); 
     } catch (e) { 
         console.error('❌ Error al inicializar:', e.message);
-        
-        // Si detectamos el error Code: 21 o SingletonLock o Carpeta en Uso
-        if (e.message.includes('Code: 21') || e.message.includes('SingletonLock') || e.message.includes('in use by another Chromium')) {
-             console.log('💀 CARPETA CORRUPTA DETECTADA. BORRANDO TODO PARA DESTRABAR...');
-             const folderPath = `./data/session-client-${sessionName}`;
-             try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(errBorrar) {}
-             setTimeout(() => process.exit(1), 3000);
-             return;
+        if (e.message.includes('Code: 21') || e.message.includes('SingletonLock')) {
+             borrarSesion(sessionName);
+             process.exit(1); // Reiniciar contenedor si es error de Chrome
         }
-        process.exit(1);
     }
 }
 
@@ -202,76 +223,11 @@ async function generarYEnviarPDF(item, clientInstance) {
     try {
         console.log(`📄 Generando PDF en cola para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
+        
+        // --- PLANTILLA HTML (Misma de siempre) ---
+        const htmlContent = `<html><head><style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}.ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}.header,.footer{text-align:center;margin-bottom:10px;border-bottom:2px solid #000;padding-bottom:10px}.bold{font-weight:bold}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}.totals{margin-top:15px;text-align:right}.evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}img{max-width:100%}</style></head><body><div class="ticket"><div class="header"><p class="bold" style="font-size:1.2em">FERROLÁMINAS RICHAUD SA DE CV</p><p>FRI90092879A</p><p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p><p>Fecha: ${datos_ticket.fecha}</p><p class="bold" style="font-size:1.2em">Ticket: ${datos_ticket.folio}</p></div><div><p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p><p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p></div><div style="text-align:center;margin:10px 0;font-weight:bold">DETALLE DE COMPRA</div><table><thead><tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr></thead><tbody>${datos_ticket.productos.map(p => `<tr><td>${p.cantidad} ${p.unidad}</td><td>${p.descripcion}</td><td>$${parseFloat(p.precio).toFixed(2)}</td><td>$${(p.cantidad*p.precio).toFixed(2)}</td></tr>`).join('')}</tbody></table><div class="totals"><p>Subtotal: $${datos_ticket.subtotal}</p><p>Impuestos: $${datos_ticket.impuestos}</p><p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p></div>${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}</div></body></html>`;
 
-        const htmlContent = `
-        <html>
-            <head>
-                <style>
-                    body { font-family: 'Arial', sans-serif; font-size: 12px; color: #000; padding: 20px; }
-                    .ticket { width: 100%; max-width: 400px; margin: 0 auto; border: 1px solid #999; padding: 10px; }
-                    .header, .footer { text-align: center; margin-bottom: 10px; border-bottom: 2px solid #000; padding-bottom: 10px; }
-                    .header p, .footer p { margin: 2px 0; }
-                    .bold { font-weight: bold; }
-                    .big { font-size: 1.2em; }
-                    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-                    th, td { text-align: left; padding: 5px; border-bottom: 1px solid #ccc; font-size: 11px; }
-                    .totals { margin-top: 15px; text-align: right; }
-                    .totals p { margin: 3px 0; }
-                    .evidencia { margin-top: 20px; text-align: center; border-top: 2px dashed #000; padding-top: 10px; }
-                    .evidencia img { max-width: 100%; height: auto; margin-top: 5px; }
-                </style>
-            </head>
-            <body>
-                <div class="ticket">
-                    <div class="header">
-                        <p class="bold big">FERROLÁMINAS RICHAUD SA DE CV</p>
-                        <p>FRI90092879A</p>
-                        <p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p>
-                        <p>Fecha: ${datos_ticket.fecha}</p>
-                        <p class="bold big">Ticket: ${datos_ticket.folio}</p>
-                    </div>
-                    <div>
-                        <p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p>
-                        <p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p>
-                    </div>
-                    <div style="text-align:center; margin: 10px 0; font-weight:bold;">DETALLE DE COMPRA</div>
-                    <table>
-                        <thead>
-                            <tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr>
-                        </thead>
-                        <tbody>
-                            ${datos_ticket.productos.map(p => `
-                                <tr>
-                                    <td>${p.cantidad} ${p.unidad}</td>
-                                    <td>${p.descripcion}</td>
-                                    <td>$${parseFloat(p.precio).toFixed(2)}</td>
-                                    <td>$${(p.cantidad * p.precio).toFixed(2)}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                    <div class="totals">
-                        <p>Subtotal: $${datos_ticket.subtotal}</p>
-                        <p>Impuestos: $${datos_ticket.impuestos}</p>
-                        <p class="bold big">TOTAL: $${datos_ticket.total}</p>
-                    </div>
-                    ${foto_evidencia ? `
-                    <div class="evidencia">
-                        <p class="bold">📸 EVIDENCIA DE ENTREGA</p>
-                        <img src="${foto_evidencia}" />
-                    </div>` : ''}
-                    <div class="footer" style="margin-top: 20px; border:none;">
-                        <p>GRACIAS POR SU COMPRA</p>
-                        <p>www.ferrolaminas.com.mx</p>
-                    </div>
-                </div>
-            </body>
-        </html>`;
-
-        const browser = await puppeteer.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
+        const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
         const page = await browser.newPage();
         await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
@@ -284,14 +240,11 @@ async function generarYEnviarPDF(item, clientInstance) {
         if (chatId.length === 10) chatId = '52' + chatId;
         chatId = chatId + '@c.us';
         
-        const captionFinal = item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠";
-
-        await clientInstance.sendMessage(chatId, media, { caption: captionFinal });
+        await clientInstance.sendMessage(chatId, media, { caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" });
         console.log(`✅ PDF enviado a ${item.numero}`);
         return true;
-
     } catch (e) {
-        console.error("❌ Error generando/enviando PDF:", e);
+        console.error("❌ Error PDF:", e.message);
         return false;
     }
 }
@@ -304,7 +257,7 @@ const processQueue = async () => {
     if (mensajesEnRacha >= limiteRachaActual) {
         const minutosPausa = getRandomDelay(10, 20); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS...`);
-        io.emit('status', `☕ Descanso de seguridad (${minutosPausa} min)`);
+        io.emit('status', `☕ Descanso (${minutosPausa} min)`);
         mensajesEnRacha = 0;
         limiteRachaActual = getRandomDelay(3, 7); 
         setTimeout(() => { console.log('⚡ Volviendo...'); processQueue(); }, minutosPausa * 60 * 1000);
@@ -323,47 +276,21 @@ const processQueue = async () => {
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
 
         const isRegistered = await client.isRegisteredUser(finalNumber);
-
         if (isRegistered) {
-            if (item.type === 'pdf') {
-                await generarYEnviarPDF(item, client);
-            } else {
+            if (item.type === 'pdf') await generarYEnviarPDF(item, client);
+            else {
                 if (item.mediaUrl) {
-                    try {
-                        const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
-                        await client.sendMessage(finalNumber, media, { caption: item.mensaje });
-                    } catch (imgError) {
-                        await client.sendMessage(finalNumber, item.mensaje + `\n\n(Link: ${item.mediaUrl})`);
-                    }
-                } else {
-                    await client.sendMessage(finalNumber, item.mensaje);
-                }
+                    const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                    await client.sendMessage(finalNumber, media, { caption: item.mensaje });
+                } else await client.sendMessage(finalNumber, item.mensaje);
             }
             item.resolve({ success: true });
             mensajesEnRacha++; 
-        } else {
-            item.resolve({ success: false, error: 'No registrado' });
-        }
+        } else item.resolve({ success: false, error: 'No registrado' });
     } catch (error) {
-        console.error('❌ Error procesando cola:', error.message);
+        console.error('❌ Error cola:', error.message);
         item.resolve({ success: false, error: error.message });
-
-        // ▼▼▼ BLOQUEO ANTI-ZOMBIE (MATAR AL INSTANTE) ▼▼▼
-        const erroresFatales = [
-            'Target closed',
-            'detached Frame',
-            'Protocol error',
-            'Session closed',
-            'browser has disconnected',
-            'Evaluation failed'
-        ];
-
-        if (erroresFatales.some(frase => error.message.includes(frase))) {
-            console.log('💀 ERROR CRÍTICO DETECTADO: El navegador murió. Reiniciando servidor AHORA...');
-            process.exit(1); 
-        }
-        // ▲▲▲ FIN BLINDAJE ▲▲▲
-        
+        if (error.message.includes('Target closed') || error.message.includes('Session closed')) process.exit(1); 
     } finally {
         messageQueue.shift(); 
         const shortPause = getRandomDelay(60000, 90000); 
@@ -373,92 +300,64 @@ const processQueue = async () => {
 };
 
 // --- RUTAS API ---
+// AQUÍ ESTÁ LA CLAVE: Al picar botón, pasamos TRUE (Manual)
+app.post('/iniciar-chip-a', authMiddleware, (req, res) => { startSession('chip-a', true); res.json({success:true}); });
+app.post('/iniciar-chip-b', authMiddleware, (req, res) => { startSession('chip-b', true); res.json({success:true}); });
 
-app.post('/iniciar-chip-a', authMiddleware, (req, res) => { startSession('chip-a'); res.json({success:true}); });
-app.post('/iniciar-chip-b', authMiddleware, (req, res) => { startSession('chip-b'); res.json({success:true}); });
-
-app.post('/borrar-chip-a', authMiddleware, (req, res) => { 
-    const p = './data/session-client-chip-a';
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
-    res.json({success:true}); 
-    if(activeSessionName === 'chip-a') process.exit(0);
-});
-app.post('/borrar-chip-b', authMiddleware, (req, res) => { 
-    const p = './data/session-client-chip-b';
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
-    res.json({success:true}); 
-    if(activeSessionName === 'chip-b') process.exit(0);
-});
+app.post('/borrar-chip-a', authMiddleware, (req, res) => { borrarSesion('chip-a'); res.json({success:true}); });
+app.post('/borrar-chip-b', authMiddleware, (req, res) => { borrarSesion('chip-b'); res.json({success:true}); });
 
 app.post('/enviar', authMiddleware, (req, res) => {
     if (!isClientReady) return res.status(503).json({ error: 'Bot dormido' });
-    
-    // Check Hora
-    const office = checkOfficeHours();
-    if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada (6:00 PM)' });
-
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Oficina cerrada' });
     messageQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
     processQueue();
     res.json({ success: true });
 });
 
-// ENVÍO PDF (SIN BLOQUEO DE DUPLICADOS)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     if (!isClientReady) return res.status(503).json({ error: 'Bot dormido' });
-
-    // 1. Checar Hora
-    const office = checkOfficeHours();
-    if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada (6:00 PM)' });
-
-    // SIN FILTROS: Pasa directo a la cola para permitir mensajes internos
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Oficina cerrada' });
     messageQueue.push({ type: 'pdf', ...req.body, pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, resolve: () => {} });
     processQueue();
     res.json({ success: true });
 });
 
-app.post('/detener-bot', authMiddleware, async (req, res) => {
-    try { await client.destroy(); } catch(e) {}
-    process.exit(0); 
-});
+app.post('/detener-bot', authMiddleware, async (req, res) => { try { await client.destroy(); } catch(e) {} process.exit(0); });
 app.post('/limpiar-cola', authMiddleware, (req, res) => { messageQueue = []; res.json({ success: true }); });
 app.get('/', (req, res) => res.render('index'));
 app.get('/status', (req, res) => res.json({ ready: isClientReady, cola: messageQueue.length, session: activeSessionName }));
 
-// EVENTOS SOCKET
 io.on('connection', (socket) => {
     if(activeSessionName) socket.emit('status', isClientReady ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` : `⏳ Cargando ${activeSessionName}...`);
-    else socket.emit('status', '💤 Iniciando sistema...');
+    else socket.emit('status', '💤 Sistema en espera');
 });
 
-// --- ARRANQUE CON CHECK DE CARPETA (OJO MÁGICO) ---
+// --- ARRANQUE AUTOMÁTICO INTELIGENTE ---
 server.listen(PORT, () => {
-    console.log(`🛡️ SERVIDOR PING-PONG LISTO EN PUERTO ${PORT}`);
+    console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
 
-    // 1. OBTENER TURNO QUE TOCA
-    const turnoCorrecto = getTurnoActual();
-    console.log(`🕒 HORA: ${moment().tz('America/Mexico_City').format('HH:mm')} -> TOCA ${turnoCorrecto.toUpperCase()}`);
+    const turno = getTurnoActual();
+    console.log(`🕒 TOCA: ${turno.toUpperCase()}`);
     
-    // 2. ¿EXISTE LA CARPETA? (EL CHECK PARA EVITAR QRs INFINITOS)
-    if (existeSesion(turnoCorrecto)) {
-        console.log(`📂 CARPETA ENCONTRADA. INICIANDO AUTOMÁTICAMENTE.`);
-        startSession(turnoCorrecto);
+    // INICIO AUTOMÁTICO (isManual = FALSE)
+    // Si la carpeta existe, intentamos entrar. Si falla, el código de arriba activará el RESCATE.
+    if (existeSesion(turno)) {
+        console.log(`📂 Carpeta detectada. Intentando arrancar ${turno}...`);
+        startSession(turno, false);
     } else {
-        console.log(`⚠️ CARPETA NO ENCONTRADA PARA ${turnoCorrecto}. ESPERANDO INICIO MANUAL DESDE PANEL.`);
-        io.emit('status', `⚠️ FALTA SESIÓN ${turnoCorrecto.toUpperCase()}. INICIE MANUALMENTE.`);
+        console.log(`⚠️ No hay sesión para ${turno}. Esperando inicio manual.`);
+        io.emit('status', `⚠️ FALTA SESIÓN ${turno.toUpperCase()}. INICIE MANUALMENTE.`);
     }
 
-    // 3. CRONÓMETRO DE CAMBIO
+    // SUPERVISOR DE TURNO (CADA MINUTO)
     setInterval(() => {
-        const turnoDeberSer = getTurnoActual();
-        // Solo cambiamos si NO estamos ya en ese turno
-        if (activeSessionName && activeSessionName !== turnoDeberSer) {
-            
-            // CHECK DE SEGURIDAD: ¿Existe la carpeta del NUEVO turno?
-            if (existeSesion(turnoDeberSer)) {
-                console.log(`🔀 CAMBIO DE TURNO (${activeSessionName} -> ${turnoDeberSer}). REINICIANDO...`);
-                process.exit(0); 
-            } else {
-                console.log(`⚠️ TOCABA CAMBIO A ${turnoDeberSer}, PERO NO TIENE SESIÓN. ME QUEDO EN ${activeSessionName}.`);
+        const turnoDebido = getTurnoActual();
+        if (activeSessionName && activeSessionName !== turnoDebido && !modoRescateActivo) {
+            // Solo cambiamos si existe la carpeta del nuevo turno
+            if (existeSesion(turnoDebido)) {
+                console.log(`🔀 CAMBIO DE TURNO A ${turnoDebido}. REINICIANDO...`);
+                process.exit(0);
             }
         }
     }, 60000); 
