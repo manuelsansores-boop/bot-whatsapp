@@ -13,15 +13,14 @@ let RUTA_CHROME_DETECTADA = null;
 
 try {
     console.log("🛠️ Asegurando instalación de Chrome...");
-    // 1. Instalamos la versión ESTABLE (que es la v131 actualmente)
+    // 1. Instalamos la versión ESTABLE
     execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
     
-    // 2. Buscamos manualmente dónde demonios se guardó en la caché
+    // 2. Buscamos manualmente dónde se guardó
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
     if (fs.existsSync(cacheDir)) {
-        const carpetas = fs.readdirSync(cacheDir); // Ej: linux-131.0.6778.204
+        const carpetas = fs.readdirSync(cacheDir);
         for (const carpeta of carpetas) {
-            // Buscamos el ejecutable dentro de la carpeta de versión
             const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
             if (fs.existsSync(posibleRuta)) {
                 RUTA_CHROME_DETECTADA = posibleRuta;
@@ -61,8 +60,7 @@ let isProcessingQueue = false;
 let mensajesEnRacha = 0;
 let limiteRachaActual = 5; 
 
-// ▼▼▼ MEMORIA ANTI-DUPLICADOS (RESTAURADA) ▼▼▼
-const ticketsProcesados = new Set(); 
+// (SE ELIMINÓ LA VARIABLE ticketsProcesados PARA PERMITIR DUPLICADOS)
 
 // MIDDLEWARE
 const authMiddleware = (req, res, next) => {
@@ -84,18 +82,22 @@ const checkOfficeHours = () => {
 // --- FUNCIÓN PARA DETERMINAR QUÉ CHIP TOCA ---
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
-    
     // LOGICA PING-PONG (Cambio cada 2 horas)
     if (hora >= 8 && hora < 10) return 'chip-a';
     if (hora >= 10 && hora < 12) return 'chip-b';
     if (hora >= 12 && hora < 14) return 'chip-a';
     if (hora >= 14 && hora < 16) return 'chip-b';
     if (hora >= 16 && hora < 18) return 'chip-a';
-    
     return 'chip-a'; // Default fuera de horario
 }
 
-// --- FUNCIÓN PARA INICIAR SESIÓN (MODO EMERGENCIA + CHROME FIX) ---
+// --- FUNCIÓN PARA VERIFICAR SI EXISTE CARPETA DE SESIÓN ---
+function existeSesion(sessionName) {
+    const folderPath = `./data/session-client-${sessionName}`;
+    return fs.existsSync(folderPath);
+}
+
+// --- FUNCIÓN PARA INICIAR SESIÓN ---
 async function startSession(sessionName) {
     if (client) {
         try { await client.destroy(); } catch(e) {}
@@ -125,12 +127,11 @@ async function startSession(sessionName) {
         ]
     };
 
-    // ▼▼▼ INYECCIÓN DE LA RUTA DE CHROME ENCONTRADA ▼▼▼
+    // Inyección de ruta Chrome
     if (RUTA_CHROME_DETECTADA) {
         console.log(`💉 Usando Chrome encontrado en: ${RUTA_CHROME_DETECTADA}`);
         puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
     }
-    // ▲▲▲ FIN INYECCIÓN ▲▲▲
 
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -138,7 +139,7 @@ async function startSession(sessionName) {
             clientId: `client-${sessionName}`, 
             dataPath: './data' 
         }),
-        puppeteer: puppeteerConfig, // Usamos la config inyectada
+        puppeteer: puppeteerConfig,
         qrMaxRetries: 5,
         ffmpegPath: ffmpegPath
     });
@@ -179,7 +180,6 @@ async function startSession(sessionName) {
         process.exit(1); 
     });
 
-    // ▼▼▼ MANEJO DE ERRORES AL INICIALIZAR ▼▼▼
     try { 
         await client.initialize(); 
     } catch (e) { 
@@ -188,23 +188,11 @@ async function startSession(sessionName) {
         // Si detectamos el error Code: 21 o SingletonLock o Carpeta en Uso
         if (e.message.includes('Code: 21') || e.message.includes('SingletonLock') || e.message.includes('in use by another Chromium')) {
              console.log('💀 CARPETA CORRUPTA DETECTADA. BORRANDO TODO PARA DESTRABAR...');
-             
              const folderPath = `./data/session-client-${sessionName}`;
-             try {
-                if (fs.existsSync(folderPath)) {
-                    // BORRADO AGRESIVO DE LA CARPETA
-                    fs.rmSync(folderPath, { recursive: true, force: true });
-                    console.log('🗑️ CARPETA BORRADA. EL PROBLEMA SE HA RESUELTO.');
-                }
-             } catch(errBorrar) {
-                 console.error('⚠️ No se pudo borrar la carpeta:', errBorrar);
-             }
-
-             console.log('🔄 Reiniciando servidor limpio en 3 segundos...');
+             try { if (fs.existsSync(folderPath)) fs.rmSync(folderPath, { recursive: true, force: true }); } catch(errBorrar) {}
              setTimeout(() => process.exit(1), 3000);
              return;
         }
-        // Cualquier otro error, solo reinicia
         process.exit(1);
     }
 }
@@ -414,7 +402,7 @@ app.post('/enviar', authMiddleware, (req, res) => {
     res.json({ success: true });
 });
 
-// ENVÍO PDF (CON ANTI-DUPLICADOS Y CHEQUEO DE HORA)
+// ENVÍO PDF (SIN BLOQUEO DE DUPLICADOS)
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     if (!isClientReady) return res.status(503).json({ error: 'Bot dormido' });
 
@@ -422,21 +410,7 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     const office = checkOfficeHours();
     if (!office.isOpen) return res.status(400).json({ error: 'Oficina cerrada (6:00 PM)' });
 
-    // 2. ▼▼▼ LOGICA ANTI-DUPLICADOS (IDEMPOTENCIA) ▼▼▼
-    const { datos_ticket } = req.body;
-    const folioUnico = datos_ticket?.folio; 
-
-    if (folioUnico && ticketsProcesados.has(folioUnico)) {
-        console.log(`🚫 DUPLICADO BLOQUEADO: Ticket ${folioUnico} ya se procesó hace un momento.`);
-        return res.json({ success: true, message: 'Duplicado ignorado (Idempotencia)' });
-    }
-
-    if (folioUnico) {
-        ticketsProcesados.add(folioUnico);
-        setTimeout(() => ticketsProcesados.delete(folioUnico), 5 * 60 * 1000);
-    }
-    // ▲▲▲ FIN LOGICA ▼▼▼
-
+    // SIN FILTROS: Pasa directo a la cola para permitir mensajes internos
     messageQueue.push({ type: 'pdf', ...req.body, pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, resolve: () => {} });
     processQueue();
     res.json({ success: true });
@@ -456,21 +430,36 @@ io.on('connection', (socket) => {
     else socket.emit('status', '💤 Iniciando sistema...');
 });
 
-// --- ARRANQUE ---
+// --- ARRANQUE CON CHECK DE CARPETA (OJO MÁGICO) ---
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR PING-PONG LISTO EN PUERTO ${PORT}`);
 
-    // 1. INICIO AUTOMÁTICO
+    // 1. OBTENER TURNO QUE TOCA
     const turnoCorrecto = getTurnoActual();
-    console.log(`🕒 HORA DETECTADA: ${moment().tz('America/Mexico_City').format('HH:mm')} -> TOCA ${turnoCorrecto.toUpperCase()}`);
-    startSession(turnoCorrecto);
+    console.log(`🕒 HORA: ${moment().tz('America/Mexico_City').format('HH:mm')} -> TOCA ${turnoCorrecto.toUpperCase()}`);
+    
+    // 2. ¿EXISTE LA CARPETA? (EL CHECK PARA EVITAR QRs INFINITOS)
+    if (existeSesion(turnoCorrecto)) {
+        console.log(`📂 CARPETA ENCONTRADA. INICIANDO AUTOMÁTICAMENTE.`);
+        startSession(turnoCorrecto);
+    } else {
+        console.log(`⚠️ CARPETA NO ENCONTRADA PARA ${turnoCorrecto}. ESPERANDO INICIO MANUAL DESDE PANEL.`);
+        io.emit('status', `⚠️ FALTA SESIÓN ${turnoCorrecto.toUpperCase()}. INICIE MANUALMENTE.`);
+    }
 
-    // 2. CRONÓMETRO DE CAMBIO
+    // 3. CRONÓMETRO DE CAMBIO
     setInterval(() => {
         const turnoDeberSer = getTurnoActual();
+        // Solo cambiamos si NO estamos ya en ese turno
         if (activeSessionName && activeSessionName !== turnoDeberSer) {
-            console.log(`🔀 CAMBIO DE TURNO DETECTADO (${activeSessionName} -> ${turnoDeberSer}). REINICIANDO...`);
-            process.exit(0); 
+            
+            // CHECK DE SEGURIDAD: ¿Existe la carpeta del NUEVO turno?
+            if (existeSesion(turnoDeberSer)) {
+                console.log(`🔀 CAMBIO DE TURNO (${activeSessionName} -> ${turnoDeberSer}). REINICIANDO...`);
+                process.exit(0); 
+            } else {
+                console.log(`⚠️ TOCABA CAMBIO A ${turnoDeberSer}, PERO NO TIENE SESIÓN. ME QUEDO EN ${activeSessionName}.`);
+            }
         }
     }, 60000); 
 });
