@@ -8,19 +8,20 @@ const moment = require('moment-timezone');
 const puppeteer = require('puppeteer'); 
 const { execSync } = require('child_process');
 
-// ▼▼▼ FIX INSTALACIÓN CHROME (NO TOCAR) ▼▼▼
+// ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼
 let RUTA_CHROME_DETECTADA = null;
 try {
     console.log("🛠️ Asegurando instalación de Chrome...");
     execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
     if (fs.existsSync(cacheDir)) {
-        const carpetas = fs.readdirSync(cacheDir);
+        // 🔥 CAMBIO 1: Ordenamos para agarrar siempre la versión MÁS NUEVA
+        const carpetas = fs.readdirSync(cacheDir).sort().reverse(); 
         for (const carpeta of carpetas) {
             const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
             if (fs.existsSync(posibleRuta)) {
                 RUTA_CHROME_DETECTADA = posibleRuta;
-                console.log(`✅ Chrome encontrado en: ${posibleRuta}`);
+                console.log(`✅ Chrome seleccionado (Versión más nueva): ${posibleRuta}`);
                 break;
             }
         }
@@ -38,7 +39,7 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket', 'polling']
 });
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Render suele usar 10000
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 const COLA_FILE = './data/cola.json'; // 📒 EL CUADERNO DE PERSISTENCIA
 
@@ -200,23 +201,26 @@ async function startSession(sessionName, isManual = false) {
             dataPath: './data' 
         }),
         puppeteer: puppeteerConfig,
-        qrMaxRetries: isManual ? 5 : 0, 
+        qrMaxRetries: isManual ? 5 : 0, // En auto no reintenta solo, pero abajo evitamos que muera
         ffmpegPath: ffmpegPath
     });
 
+    // 🔥 CAMBIO 2: LÓGICA ANTI-BUCLE EN QR
     client.on('qr', async (qr) => { 
+        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
+        
         if (isManual) {
-            console.log('📸 SE REQUIERE ESCANEO NUEVO (Modo Manual)'); 
-            io.emit('qr', qr); 
-            io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+            console.log('(Modo Manual activado)'); 
         } else {
-            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO.`);
-            try { await client.destroy(); } catch(e){}
-            client = null;
-            borrarSesion(sessionName);
-            io.emit('status', '🛑 DETENIDO: SESIÓN CADUCADA. REINICIE MANUALMENTE.');
-            process.exit(1); 
+            // AQUÍ ANTES HABÍA UN process.exit(1) QUE MATABA TODO. LO QUITAMOS.
+            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO. NO SE REINICIA, ESPERANDO RESCATE...`);
+            // Opcional: Podrías borrar la sesión aquí si quieres obligar a un inicio limpio, 
+            // pero mejor dejamos que escanees para recuperar.
         }
+
+        // EMITIMOS SIEMPRE EL QR PARA QUE LO PUEDAS VER EN EL PANEL
+        io.emit('qr', qr); 
+        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
 
     client.on('ready', () => { 
@@ -248,7 +252,11 @@ async function startSession(sessionName, isManual = false) {
         await client.initialize(); 
     } catch (e) { 
         console.error('❌ Error al inicializar:', e.message);
-        process.exit(1); 
+        // Solo salimos si es un error fatal de inicio, no de QR
+        if(e.message.includes('Target closed')) {
+             console.log('🔄 Reiniciando por error de navegador en 5 segundos...');
+             setTimeout(() => process.exit(1), 5000); 
+        }
     }
 }
 
@@ -297,8 +305,8 @@ const processQueue = async () => {
     // RACHA DE 5 a 9 MENSAJES
     if (mensajesEnRacha >= limiteRachaActual) {
         isPaused = true; 
-        // PAUSA DE 8 a 12 MINUTOS (SOLICITUD USUARIO)
-        const minutosPausa = getRandomDelay(8, 12); 
+        // PAUSA DE 8 a 15 MINUTOS (SOLICITUD USUARIO)
+        const minutosPausa = getRandomDelay(8, 15); 
         console.log(`☕ PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
         io.emit('status', `☕ Descanso (${minutosPausa} min)`);
         
@@ -488,6 +496,8 @@ server.listen(PORT, () => {
     const turno = getTurnoActual();
     console.log(`🕐 TURNO ACTUAL: ${turno.toUpperCase()}`);
     
+    // Si la sesión existe, la intentamos iniciar.
+    // Si falla el QR, el nuevo código de arriba (línea ~230) EVITARÁ que se reinicie el servidor.
     if (existeSesion(turno)) {
         startSession(turno, false);
     } else {
