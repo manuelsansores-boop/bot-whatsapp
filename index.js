@@ -51,6 +51,8 @@ let isClientReady = false;
 let messageQueue = [];
 let isProcessingQueue = false;
 let mensajesEnRacha = 0;
+// Nueva variable para bloquear la cola "de verdad" durante descansos
+let isPaused = false; 
 // Racha inicial aleatoria (entre 3 y 7 mensajes antes de descansar)
 let limiteRachaActual = Math.floor(Math.random() * (7 - 3 + 1) + 3); 
 
@@ -123,6 +125,10 @@ async function startSession(sessionName, isManual = false) {
         client = null; 
         isClientReady = false; 
     }
+    
+    // Resetear estados críticos al iniciar nueva sesión
+    isPaused = false; 
+    mensajesEnRacha = 0;
 
     activeSessionName = sessionName;
     console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
@@ -269,19 +275,28 @@ async function generarYEnviarPDF(item, clientInstance) {
 
 // --- PROCESADOR DE COLA CON RACHAS ALEATORIAS ---
 const processQueue = async () => {
+    // CONDICIÓN CRÍTICA 1: Si ya estamos procesando o no hay mensajes, salir.
     if (isProcessingQueue || messageQueue.length === 0) return;
+    
+    // CONDICIÓN CRÍTICA 2 (NUEVA): Si estamos en PAUSA, salir inmediatamente.
+    // Esto evita que una petición API despierte al bot durante su descanso.
+    if (isPaused) return; 
+
     if (!isClientReady || !client) return; 
     
     // Sistema de rachas variables: Descansa después de X mensajes (aleatorio)
     if (mensajesEnRacha >= limiteRachaActual) {
+        isPaused = true; // ACTIVAR CANDADO
         const minutosPausa = getRandomDelay(10, 25); 
         console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS (Simulando comportamiento humano)...`);
         io.emit('status', `☕ Descanso (${minutosPausa} min)`);
-        mensajesEnRacha = 0;
-        limiteRachaActual = getRandomDelay(3, 8); // Nueva meta aleatoria para próxima racha
+        
         setTimeout(() => { 
             console.log('⚡ Reanudando envíos...'); 
-            processQueue(); 
+            isPaused = false; // QUITAR CANDADO
+            mensajesEnRacha = 0; // REINICIAR CONTADOR
+            limiteRachaActual = getRandomDelay(3, 8); // Nueva meta aleatoria
+            processQueue(); // VOLVER AL TRABAJO
         }, minutosPausa * 60 * 1000);
         return;
     }
@@ -297,7 +312,6 @@ const processQueue = async () => {
         console.log(`⏳ Procesando ${item.numero}...`);
         
         // ✅ CRÍTICO: Simula "escribiendo..." (4-8 segundos)
-        // Este delay hace que parezca que un humano está escribiendo el mensaje
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
         const isRegistered = await client.isRegisteredUser(finalNumber);
@@ -367,6 +381,8 @@ app.post('/enviar', authMiddleware, (req, res) => {
     if (!checkOfficeHours().isOpen) {
         return res.status(400).json({ error: 'Fuera de horario laboral (8am-8pm)' });
     }
+    
+    // MENSAJES NORMALES: Se forman al final de la cola
     messageQueue.push({ 
         type: 'normal', 
         ...req.body, 
@@ -388,7 +404,11 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
     if (!checkOfficeHours().isOpen) {
         return res.status(400).json({ error: 'Fuera de horario laboral (8am-8pm)' });
     }
-    messageQueue.push({ 
+    
+    // 🔥 CAMBIO VIP: USAMOS UNSHIFT EN LUGAR DE PUSH 🔥
+    // Esto coloca el Ticket PDF al principio de la cola para que sea el siguiente en salir
+    // respetando siempre los tiempos de espera del bot.
+    messageQueue.unshift({ 
         type: 'pdf', 
         ...req.body, 
         pdfData: { 
@@ -397,11 +417,12 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
         }, 
         resolve: () => {} 
     });
+    
     processQueue();
     res.json({ 
         success: true, 
-        message: 'PDF agregado a la cola',
-        posicion_cola: messageQueue.length 
+        message: 'PDF agregado con PRIORIDAD VIP a la cola',
+        posicion_cola: 1 
     });
 });
 
@@ -428,12 +449,13 @@ app.get('/status', (req, res) => {
         ready: isClientReady, 
         cola: messageQueue.length, 
         session: activeSessionName,
-        rescate: false, // Ya no hay rescate automático
+        rescate: false, 
         horario_laboral: checkOfficeHours().isOpen,
         infoA,
         infoB,
         racha_actual: mensajesEnRacha,
-        limite_racha: limiteRachaActual
+        limite_racha: limiteRachaActual,
+        pausa_activa: isPaused // Dato útil para debug
     });
 });
 
