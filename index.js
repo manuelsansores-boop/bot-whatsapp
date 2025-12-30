@@ -153,6 +153,30 @@ function borrarSesion(sessionName) {
 }
 
 // --- FUNCIÓN MAESTRA: INICIAR SESIÓN ---
+// --- NUEVA FUNCIÓN AUXILIAR: Borrado Recursivo de Locks ---
+function recursiveDeleteLocks(dirPath) {
+    if (!fs.existsSync(dirPath)) return;
+    
+    try {
+        const files = fs.readdirSync(dirPath);
+        for (const file of files) {
+            const currentPath = path.join(dirPath, file);
+            if (fs.lstatSync(currentPath).isDirectory()) {
+                recursiveDeleteLocks(currentPath); // Bajar un nivel
+            } else {
+                // Si el archivo suena a bloqueo, lo borramos
+                if (file.includes('Singleton') || file.includes('lockfile')) {
+                    fs.unlinkSync(currentPath);
+                    console.log(`🔓 Lock eliminado: ${file}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("⚠️ Error limpiando locks:", e.message);
+    }
+}
+
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN (MODIFICADA) ---
 async function startSession(sessionName, isManual = false) {
     if (client) { 
         try { await client.destroy(); } catch(e) {} 
@@ -160,6 +184,12 @@ async function startSession(sessionName, isManual = false) {
         isClientReady = false; 
     }
     
+    // 1. MATAR PROCESOS ZOMBIE (Linux/Render)
+    try {
+        console.log("🔫 Asegurando que no haya Chromes zombies...");
+        execSync("pkill -f chrome || true"); // El '|| true' evita error si no hay procesos
+    } catch (e) { }
+
     isPaused = false; 
     mensajesEnRacha = 0;
 
@@ -167,11 +197,14 @@ async function startSession(sessionName, isManual = false) {
     console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
     io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
+    // 2. LIMPIEZA PROFUNDA DE LOCKS
     try {
-        const folderPath = `./data/session-client-${sessionName}`;
-        const lockFile = path.join(folderPath, 'SingletonLock');
-        if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
-    } catch (errLock) {}
+        const folderPath = path.resolve(`./data/session-client-${sessionName}`);
+        console.log(`🧹 Limpiando locks en: ${folderPath}`);
+        recursiveDeleteLocks(folderPath);
+    } catch (errLock) {
+        console.error("Error en limpieza de locks:", errLock);
+    }
 
     const puppeteerConfig = {
         headless: true,
@@ -189,6 +222,8 @@ async function startSession(sessionName, isManual = false) {
             '--disable-blink-features=AutomationControlled', 
             '--disable-infobars',
             '--window-size=1920,1080',
+            // Agregamos userDataDir explícito para asegurar control
+            `--user-data-dir=./data/session-client-${sessionName}`,
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
     };
@@ -201,24 +236,18 @@ async function startSession(sessionName, isManual = false) {
             dataPath: './data' 
         }),
         puppeteer: puppeteerConfig,
-        qrMaxRetries: isManual ? 5 : 0, // En auto no reintenta solo, pero abajo evitamos que muera
+        qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath
     });
 
-    // 🔥 CAMBIO 2: LÓGICA ANTI-BUCLE EN QR
+    // ... (El resto de tus eventos client.on('qr'), 'ready', etc. siguen igual)
     client.on('qr', async (qr) => { 
         console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
-        
         if (isManual) {
             console.log('(Modo Manual activado)'); 
         } else {
-            // AQUÍ ANTES HABÍA UN process.exit(1) QUE MATABA TODO. LO QUITAMOS.
-            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO. NO SE REINICIA, ESPERANDO RESCATE...`);
-            // Opcional: Podrías borrar la sesión aquí si quieres obligar a un inicio limpio, 
-            // pero mejor dejamos que escanees para recuperar.
+            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO.`);
         }
-
-        // EMITIMOS SIEMPRE EL QR PARA QUE LO PUEDAS VER EN EL PANEL
         io.emit('qr', qr); 
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
@@ -252,7 +281,6 @@ async function startSession(sessionName, isManual = false) {
         await client.initialize(); 
     } catch (e) { 
         console.error('❌ Error al inicializar:', e.message);
-        // Solo salimos si es un error fatal de inicio, no de QR
         if(e.message.includes('Target closed')) {
              console.log('🔄 Reiniciando por error de navegador en 5 segundos...');
              setTimeout(() => process.exit(1), 5000); 
