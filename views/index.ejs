@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Ping-Pong v6 (Rescue)</title>
+    <title>Panel Ping-Pong v7 (JSON Safe)</title>
     <style>
         body { font-family: sans-serif; background: #f0f2f5; padding: 20px; text-align: center; }
         .card { background: white; max-width: 650px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
@@ -19,9 +19,13 @@
         .btn-green { background: #198754; width: auto; min-width: 120px; }
         .btn-stop { background: #212529; width: auto; min-width: 120px; }
         .btn-orange { background: #fd7e14; }
+        .btn-blue { background: #0dcaf0; color: #000; } /* Nuevo color para botón Ver */
         .btn-chip-a { background: #0d6efd; }
         .btn-chip-b { background: #6610f2; }
         .btn-danger { background: #dc3545; font-size: 11px; margin-top: 5px; opacity: 0.8; }
+        
+        /* Estilos para borrar item individual */
+        .btn-small-del { background: #dc3545; color: white; padding: 5px 10px; border:none; border-radius:4px; cursor:pointer; margin-left: 10px;}
 
         .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
         .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 10px; background: #f9f9f9; }
@@ -32,19 +36,26 @@
 
         .log { text-align: left; background: #212529; color: #00ff00; padding: 10px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 11px; margin-top: 20px; border-radius: 5px; }
         input { padding: 10px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 5px; text-align: center; }
+
+        /* ESTILOS LISTA COLA */
+        #lista-cola { text-align: left; margin-top: 15px; max-height: 200px; overflow-y: auto; display: none; background: #fff; border: 1px solid #ccc; padding: 10px; border-radius: 5px; }
+        .cola-item { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 5px 0; font-size: 12px; }
+        .cola-tag { font-weight: bold; padding: 2px 5px; border-radius: 3px; font-size: 10px; margin-right: 5px; }
+        .tag-pdf { background: #ffc107; color: #000; }
+        .tag-normal { background: #e2e3e5; color: #000; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h1>🏓 Bot Ping-Pong v6</h1>
-        <p style="color:#666; font-size:13px;">Con Sistema de Rescate Automático</p>
+        <h1>🏓 Bot Ping-Pong v7</h1>
+        <p style="color:#666; font-size:13px;">Persistencia JSON + Gestión de Cola</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         
         <input type="password" id="token" placeholder="Token Secreto">
         
         <div>
-            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR (RESCUE CHECK)</button>
+            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR</button>
             <button class="btn btn-stop" onclick="cmd('detener-bot')">⏹ APAGAR TODO</button>
         </div>
 
@@ -57,13 +68,21 @@
             </div>
             <div class="turno-box box-b">
                 <span class="turno-title">🟣 CHIP B</span>
-                <div class="horarios">10:00-12:00 | 14:00-16:00</div>
+                <div class="horarios">10:00-12:00 | 14:00-16:00 | 18:00-20:00</div>
                 <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar/Escanear B</button>
                 <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-b', 'CHIP B')">🗑 BORRAR MEMORIA B</button>
             </div>
         </div>
 
-        <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width:100%">🧹 Limpiar Cola</button>
+        <div style="margin-top: 15px; border-top: 2px dashed #ccc; padding-top: 15px;">
+            <h3>📦 Gestión de Envíos</h3>
+            <div style="display: flex; justify-content: center; gap: 5px;">
+                <button class="btn btn-blue" onclick="verCola()" style="width: 45%;">👁️ VER PENDIENTES</button>
+                <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width: 45%;">🔥 Borrar TODO</button>
+            </div>
+            
+            <div id="lista-cola"></div>
+        </div>
 
         <div id="qr-area" style="margin-top: 20px;"></div>
         <div class="log" id="logs"><div>> Panel listo...</div></div>
@@ -75,6 +94,7 @@
         const logs = document.getElementById('logs');
         const statusBox = document.getElementById('status-box');
         const qrArea = document.getElementById('qr-area');
+        const listaColaDiv = document.getElementById('lista-cola');
 
         function addLog(msg) {
             const div = document.createElement('div');
@@ -93,7 +113,65 @@
                 });
                 const data = await res.json();
                 addLog(data.message || data.msg || data.error);
+                // Si borramos todo, ocultamos la lista visualmente
+                if(action === 'limpiar-cola') listaColaDiv.style.display = 'none';
             } catch(e) { addLog('❌ Error de conexión'); }
+        }
+
+        // --- FUNCIONES NUEVAS PARA VER/BORRAR ITEMS ---
+        async function verCola() {
+            const token = document.getElementById('token').value;
+            if(!token) return alert('⚠️ ¡Falta el TOKEN!');
+            
+            try {
+                const res = await fetch('/cola-pendientes', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const cola = await res.json();
+                
+                listaColaDiv.style.display = 'block';
+                listaColaDiv.innerHTML = '';
+                
+                if(cola.length === 0) {
+                    listaColaDiv.innerHTML = '<p style="color:#777; padding:10px;">✅ No hay mensajes pendientes.</p>';
+                    return;
+                }
+
+                cola.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'cola-item';
+                    const tipoClass = item.tipo === 'pdf' ? 'tag-pdf' : 'tag-normal';
+                    div.innerHTML = `
+                        <div style="text-align:left;">
+                            <span class="cola-tag ${tipoClass}">${item.tipo.toUpperCase()}</span>
+                            <b>${item.numero}</b> <br>
+                            <span style="font-size:10px; color:#666;">${item.folio !== 'N/A' ? `Folio: ${item.folio}` : 'Mensaje texto'}</span>
+                        </div>
+                        <button class="btn-small-del" onclick="borrarItem(${item.index})">X</button>
+                    `;
+                    listaColaDiv.appendChild(div);
+                });
+            } catch(e) {
+                console.error(e);
+                alert('Error obteniendo cola');
+            }
+        }
+
+        async function borrarItem(index) {
+            const token = document.getElementById('token').value;
+            if(!token) return alert('Token requerido');
+            if(!confirm('¿Eliminar este mensaje específico?')) return;
+
+            try {
+                const res = await fetch('/borrar-item-cola', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ index })
+                });
+                const data = await res.json();
+                addLog(data.message);
+                verCola(); // Recargar lista automáticamente para ver que se borró
+            } catch(e) { alert('Error al borrar item'); }
         }
 
         function confirmarBorrado(action, nombre) {
@@ -109,7 +187,7 @@
             else statusBox.classList.add('idle');
             addLog(msg);
         });
-
+        
         socket.on('qr', (code) => {
             qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA AHORA</p></div>`;
         });

@@ -40,6 +40,7 @@ const io = new Server(server, {
 });
 const PORT = process.env.PORT || 3000;
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
+const COLA_FILE = './data/cola.json'; // 📒 EL CUADERNO DE PERSISTENCIA
 
 app.use(express.json());
 app.set('view engine', 'ejs');
@@ -51,10 +52,43 @@ let isClientReady = false;
 let messageQueue = [];
 let isProcessingQueue = false;
 let mensajesEnRacha = 0;
-// Nueva variable para bloquear la cola "de verdad" durante descansos
 let isPaused = false; 
-// Racha inicial aleatoria (entre 3 y 7 mensajes antes de descansar)
-let limiteRachaActual = Math.floor(Math.random() * (7 - 3 + 1) + 3); 
+
+// Racha inicial: 5 a 9 mensajes (SOLICITUD USUARIO)
+let limiteRachaActual = Math.floor(Math.random() * (9 - 5 + 1) + 5); 
+
+// --- FUNCIONES DE PERSISTENCIA (EL "CUADERNO") ---
+function saveQueue() {
+    try {
+        // Guardamos todo MENOS la función 'resolve' que no se puede escribir en JSON
+        const cleanQueue = messageQueue.map(item => {
+            const { resolve, ...data } = item; 
+            return data;
+        });
+        if (!fs.existsSync('./data')) fs.mkdirSync('./data');
+        fs.writeFileSync(COLA_FILE, JSON.stringify(cleanQueue, null, 2));
+    } catch (e) {
+        console.error("❌ Error guardando cola:", e);
+    }
+}
+
+function loadQueue() {
+    try {
+        if (fs.existsSync(COLA_FILE)) {
+            const data = fs.readFileSync(COLA_FILE, 'utf8');
+            const rawQueue = JSON.parse(data);
+            // Reconstruimos la cola agregando una función resolve vacía para que no truene el código
+            messageQueue = rawQueue.map(item => ({
+                ...item,
+                resolve: () => {} // Función dummy
+            }));
+            console.log(`📒 COLA RECUPERADA: ${messageQueue.length} mensajes pendientes.`);
+        }
+    } catch (e) {
+        console.error("❌ Error cargando cola:", e);
+        messageQueue = [];
+    }
+}
 
 // --- MIDDLEWARE DE AUTENTICACIÓN ---
 const authMiddleware = (req, res, next) => {
@@ -117,16 +151,14 @@ function borrarSesion(sessionName) {
     }
 }
 
-// --- FUNCIÓN MAESTRA: INICIAR SESIÓN (CON STEALTH, SIN HEARTBEAT) ---
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN ---
 async function startSession(sessionName, isManual = false) {
-    // Limpiar sesión anterior
     if (client) { 
         try { await client.destroy(); } catch(e) {} 
         client = null; 
         isClientReady = false; 
     }
     
-    // Resetear estados críticos al iniciar nueva sesión
     isPaused = false; 
     mensajesEnRacha = 0;
 
@@ -134,18 +166,16 @@ async function startSession(sessionName, isManual = false) {
     console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
     io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
-    // Fix Lock (eliminar archivo de bloqueo si existe)
     try {
         const folderPath = `./data/session-client-${sessionName}`;
         const lockFile = path.join(folderPath, 'SingletonLock');
         if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
     } catch (errLock) {}
 
-    // ▼▼▼ CONFIGURACIÓN CAMUFLAJE (OBLIGATORIO PARA NO SER DETECTADO) ▼▼▼
     const puppeteerConfig = {
         headless: true,
         protocolTimeout: 300000,
-        ignoreDefaultArgs: ['--enable-automation'], // Quita el letrero "Chrome es controlado por software"
+        ignoreDefaultArgs: ['--enable-automation'], 
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox', 
@@ -155,7 +185,6 @@ async function startSession(sessionName, isManual = false) {
             '--single-process', 
             '--disable-gpu',
             '--js-flags="--max-old-space-size=1024"',
-            // Flags de Camuflaje para parecer humano:
             '--disable-blink-features=AutomationControlled', 
             '--disable-infobars',
             '--window-size=1920,1080',
@@ -163,7 +192,6 @@ async function startSession(sessionName, isManual = false) {
         ]
     };
     if (RUTA_CHROME_DETECTADA) puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
-    // ▲▲▲ FIN CONFIGURACIÓN CAMUFLAJE ▲▲▲
 
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -176,26 +204,21 @@ async function startSession(sessionName, isManual = false) {
         ffmpegPath: ffmpegPath
     });
 
-    // --- EVENTO: QR CODE ---
     client.on('qr', async (qr) => { 
         if (isManual) {
             console.log('📸 SE REQUIERE ESCANEO NUEVO (Modo Manual)'); 
             io.emit('qr', qr); 
             io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
         } else {
-            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO. La sesión no sirve.`);
+            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO.`);
             try { await client.destroy(); } catch(e){}
             client = null;
             borrarSesion(sessionName);
-            
-            // SIN RESCATE AUTOMÁTICO - Para evitar que te maten el segundo chip
-            console.log('🛑 SISTEMA DETENIDO POR SEGURIDAD. Revise manualmente.');
             io.emit('status', '🛑 DETENIDO: SESIÓN CADUCADA. REINICIE MANUALMENTE.');
             process.exit(1); 
         }
     });
 
-    // --- EVENTO: LISTO Y CONECTADO ---
     client.on('ready', () => { 
         isClientReady = true; 
         console.log(`✅ ${sessionName} CONECTADO Y LISTO`);
@@ -205,19 +228,15 @@ async function startSession(sessionName, isManual = false) {
             number: client.info.wid.user, 
             session: sessionName 
         }); 
-        
-        // SIN HEARTBEAT - Solo procesamos la cola cuando llegan mensajes
         processQueue(); 
     });
 
-    // --- EVENTO: FALLO DE AUTENTICACIÓN ---
     client.on('auth_failure', () => {
         console.log('⛔ FALLO DE AUTENTICACIÓN');
         io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
         if (!isManual) borrarSesion(sessionName);
     });
 
-    // --- EVENTO: DESCONEXIÓN ---
     client.on('disconnected', (reason) => { 
         console.log('❌ Desconectado:', reason);
         isClientReady = false; 
@@ -225,25 +244,20 @@ async function startSession(sessionName, isManual = false) {
         if (reason === 'LOGOUT') borrarSesion(sessionName);
     });
 
-    // --- INICIALIZAR CLIENTE ---
     try { 
         await client.initialize(); 
     } catch (e) { 
         console.error('❌ Error al inicializar:', e.message);
-        if (e.message.includes('Code: 21') || e.message.includes('SingletonLock')) {
-            borrarSesion(sessionName);
-            process.exit(1); 
-        }
+        process.exit(1); 
     }
 }
 
-// --- GENERADOR DE PDF CON TICKET Y EVIDENCIA ---
+// --- GENERADOR DE PDF ---
 async function generarYEnviarPDF(item, clientInstance) {
     try {
         console.log(`📄 Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
         
-        // HTML COMPLETO DEL TICKET
         const htmlContent = `<html><head><style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}.ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}.header,.footer{text-align:center;margin-bottom:10px;border-bottom:2px solid #000;padding-bottom:10px}.bold{font-weight:bold}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}.totals{margin-top:15px;text-align:right}.evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}img{max-width:100%}</style></head><body><div class="ticket"><div class="header"><p class="bold" style="font-size:1.2em">FERROLÁMINAS RICHAUD SA DE CV</p><p>FRI90092879A</p><p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p><p>Fecha: ${datos_ticket.fecha}</p><p class="bold" style="font-size:1.2em">Ticket: ${datos_ticket.folio}</p></div><div><p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p><p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p></div><div style="text-align:center;margin:10px 0;font-weight:bold">DETALLE DE COMPRA</div><table><thead><tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr></thead><tbody>${datos_ticket.productos.map(p => `<tr><td>${p.cantidad} ${p.unidad}</td><td>${p.descripcion}</td><td>$${parseFloat(p.precio).toFixed(2)}</td><td>$${(p.cantidad*p.precio).toFixed(2)}</td></tr>`).join('')}</tbody></table><div class="totals"><p>Subtotal: $${datos_ticket.subtotal}</p><p>Impuestos: $${datos_ticket.impuestos}</p><p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p></div>${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}</div></body></html>`;
 
         const browser = await puppeteer.launch({ 
@@ -273,30 +287,27 @@ async function generarYEnviarPDF(item, clientInstance) {
     }
 }
 
-// --- PROCESADOR DE COLA CON RACHAS ALEATORIAS ---
+// --- PROCESADOR DE COLA ---
 const processQueue = async () => {
-    // CONDICIÓN CRÍTICA 1: Si ya estamos procesando o no hay mensajes, salir.
     if (isProcessingQueue || messageQueue.length === 0) return;
-    
-    // CONDICIÓN CRÍTICA 2 (NUEVA): Si estamos en PAUSA, salir inmediatamente.
-    // Esto evita que una petición API despierte al bot durante su descanso.
     if (isPaused) return; 
 
     if (!isClientReady || !client) return; 
     
-    // Sistema de rachas variables: Descansa después de X mensajes (aleatorio)
+    // RACHA DE 5 a 9 MENSAJES
     if (mensajesEnRacha >= limiteRachaActual) {
-        isPaused = true; // ACTIVAR CANDADO
-        const minutosPausa = getRandomDelay(10, 25); 
-        console.log(`☕ PAUSA LARGA DE ${minutosPausa} MINUTOS (Simulando comportamiento humano)...`);
+        isPaused = true; 
+        // PAUSA DE 8 a 12 MINUTOS (SOLICITUD USUARIO)
+        const minutosPausa = getRandomDelay(8, 12); 
+        console.log(`☕ PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
         io.emit('status', `☕ Descanso (${minutosPausa} min)`);
         
         setTimeout(() => { 
             console.log('⚡ Reanudando envíos...'); 
-            isPaused = false; // QUITAR CANDADO
-            mensajesEnRacha = 0; // REINICIAR CONTADOR
-            limiteRachaActual = getRandomDelay(3, 8); // Nueva meta aleatoria
-            processQueue(); // VOLVER AL TRABAJO
+            isPaused = false; 
+            mensajesEnRacha = 0; 
+            limiteRachaActual = getRandomDelay(5, 9); // Nueva racha aleatoria
+            processQueue(); 
         }, minutosPausa * 60 * 1000);
         return;
     }
@@ -311,7 +322,7 @@ const processQueue = async () => {
         
         console.log(`⏳ Procesando ${item.numero}...`);
         
-        // ✅ CRÍTICO: Simula "escribiendo..." (4-8 segundos)
+        // Simula "escribiendo..." (4-8 segundos)
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
         const isRegistered = await client.isRegisteredUser(finalNumber);
@@ -326,23 +337,25 @@ const processQueue = async () => {
                     await client.sendMessage(finalNumber, item.mensaje);
                 }
             }
-            item.resolve({ success: true });
+            if(item.resolve) item.resolve({ success: true });
             mensajesEnRacha++; 
             console.log(`✅ Mensaje enviado a ${item.numero} (Racha: ${mensajesEnRacha}/${limiteRachaActual})`);
         } else {
-            item.resolve({ success: false, error: 'Número no registrado en WhatsApp' });
-            console.log(`⚠️ ${item.numero} no está registrado en WhatsApp`);
+            if(item.resolve) item.resolve({ success: false, error: 'Número no registrado' });
+            console.log(`⚠️ ${item.numero} no registrado`);
         }
     } catch (error) {
         console.error('❌ Error en cola:', error.message);
-        item.resolve({ success: false, error: error.message });
-        if (error.message.includes('Target closed') || error.message.includes('Session closed')) {
+        if(item.resolve) item.resolve({ success: false, error: error.message });
+        if (error.message.includes('Session closed')) {
             console.error('💀 SESIÓN MURIÓ. REINICIANDO SISTEMA...');
             process.exit(1); 
         }
     } finally {
         messageQueue.shift(); 
-        // Pausa entre mensajes (45-90 segundos) - Simulando escritura humana variable
+        saveQueue(); // 💾 ACTUALIZAR CUADERNO AL TERMINAR UNO
+        
+        // Pausa entre mensajes (45-90 segundos)
         const shortPause = getRandomDelay(45000, 90000); 
         console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
         setTimeout(() => { 
@@ -374,56 +387,30 @@ app.post('/borrar-chip-b', authMiddleware, (req, res) => {
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
-    if (!isClientReady) {
-        return res.status(503).json({ error: 'Bot no está listo o conectado' });
-    }
-    // ✅ CRÍTICO: Validación de horario laboral
-    if (!checkOfficeHours().isOpen) {
-        return res.status(400).json({ error: 'Fuera de horario laboral (8am-8pm)' });
-    }
+    if (!isClientReady) return res.status(503).json({ error: 'Bot no está listo' });
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
     
-    // MENSAJES NORMALES: Se forman al final de la cola
-    messageQueue.push({ 
-        type: 'normal', 
-        ...req.body, 
-        resolve: () => {} 
-    });
+    messageQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
+    saveQueue(); // 💾 GUARDAR EN CUADERNO
     processQueue();
-    res.json({ 
-        success: true, 
-        message: 'Mensaje agregado a la cola',
-        posicion_cola: messageQueue.length 
-    });
+    res.json({ success: true, message: 'Agregado a la cola', posicion_cola: messageQueue.length });
 });
 
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
-    if (!isClientReady) {
-        return res.status(503).json({ error: 'Bot no está listo o conectado' });
-    }
-    // ✅ CRÍTICO: Validación de horario laboral
-    if (!checkOfficeHours().isOpen) {
-        return res.status(400).json({ error: 'Fuera de horario laboral (8am-8pm)' });
-    }
+    if (!isClientReady) return res.status(503).json({ error: 'Bot no está listo' });
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
     
-    // 🔥 CAMBIO VIP: USAMOS UNSHIFT EN LUGAR DE PUSH 🔥
-    // Esto coloca el Ticket PDF al principio de la cola para que sea el siguiente en salir
-    // respetando siempre los tiempos de espera del bot.
+    // VIP: UNSHIFT
     messageQueue.unshift({ 
         type: 'pdf', 
         ...req.body, 
-        pdfData: { 
-            datos_ticket: req.body.datos_ticket, 
-            foto_evidencia: req.body.foto_evidencia 
-        }, 
+        pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, 
         resolve: () => {} 
     });
     
+    saveQueue(); // 💾 GUARDAR EN CUADERNO
     processQueue();
-    res.json({ 
-        success: true, 
-        message: 'PDF agregado con PRIORIDAD VIP a la cola',
-        posicion_cola: 1 
-    });
+    res.json({ success: true, message: 'PDF VIP agregado', posicion_cola: 1 });
 });
 
 app.post('/detener-bot', authMiddleware, async (req, res) => { 
@@ -436,12 +423,35 @@ app.post('/detener-bot', authMiddleware, async (req, res) => {
 app.post('/limpiar-cola', authMiddleware, (req, res) => { 
     const cantidad = messageQueue.length;
     messageQueue = []; 
-    res.json({ success: true, message: `${cantidad} mensajes eliminados de la cola` }); 
+    saveQueue(); // 💾 LIMPIAR CUADERNO
+    res.json({ success: true, message: `${cantidad} mensajes eliminados` }); 
+});
+
+// NUEVOS ENDPOINTS PARA GESTIÓN VISUAL
+app.get('/cola-pendientes', authMiddleware, (req, res) => {
+    // Devolvemos la cola limpia (sin funciones)
+    const vistaCola = messageQueue.map((item, index) => ({
+        index,
+        numero: item.numero,
+        tipo: item.type,
+        folio: item.pdfData ? item.pdfData.datos_ticket.folio : 'N/A'
+    }));
+    res.json(vistaCola);
+});
+
+app.post('/borrar-item-cola', authMiddleware, (req, res) => {
+    const { index } = req.body;
+    if (index >= 0 && index < messageQueue.length) {
+        messageQueue.splice(index, 1);
+        saveQueue(); // 💾 ACTUALIZAR CUADERNO
+        res.json({ success: true, message: 'Elemento eliminado de la cola' });
+    } else {
+        res.status(400).json({ error: 'Índice inválido' });
+    }
 });
 
 app.get('/', (req, res) => res.render('index'));
 
-// --- API STATUS ---
 app.get('/status', (req, res) => {
     const infoA = getFolderInfo('chip-a');
     const infoB = getFolderInfo('chip-b');
@@ -455,47 +465,42 @@ app.get('/status', (req, res) => {
         infoB,
         racha_actual: mensajesEnRacha,
         limite_racha: limiteRachaActual,
-        pausa_activa: isPaused // Dato útil para debug
+        pausa_activa: isPaused 
     });
 });
 
-// --- SOCKET.IO ---
 io.on('connection', (socket) => {
-    console.log('🔌 Cliente conectado via WebSocket');
+    console.log('🔌 Cliente WebSocket conectado');
     if(activeSessionName) {
         socket.emit('status', isClientReady 
             ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
             : `⏳ Cargando ${activeSessionName.toUpperCase()}...`
         );
     } else {
-        socket.emit('status', '💤 Sistema en espera de inicio manual');
+        socket.emit('status', '💤 Sistema en espera');
     }
 });
 
-// --- ARRANQUE AUTOMÁTICO DEL SERVIDOR ---
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
-    console.log(`🔐 Token de seguridad: ${MI_TOKEN_SECRETO ? 'CONFIGURADO ✅' : 'NO CONFIGURADO ⚠️'}`);
+    loadQueue(); // 💾 RECUPERAR MEMORIA AL INICIAR
 
     const turno = getTurnoActual();
     console.log(`🕐 TURNO ACTUAL: ${turno.toUpperCase()}`);
     
     if (existeSesion(turno)) {
-        console.log(`📂 Carpeta de sesión detectada. Intentando arrancar ${turno}...`);
         startSession(turno, false);
     } else {
-        console.log(`⚠️ No hay sesión guardada para ${turno}. Esperando inicio manual.`);
         io.emit('status', `⚠️ FALTA SESIÓN ${turno.toUpperCase()}. INICIE MANUALMENTE.`);
     }
     
-    // Check automático de cambio de turno cada minuto
     setInterval(() => {
         const turnoDebido = getTurnoActual();
         if (activeSessionName && activeSessionName !== turnoDebido) {
             if (existeSesion(turnoDebido)) {
                 console.log(`🔄 CAMBIO DE TURNO A ${turnoDebido.toUpperCase()}. REINICIANDO...`);
-                process.exit(0); // PM2 o similar lo reiniciará automáticamente
+                process.exit(0); 
             }
         }
-    }, 60000); // Cada 60 segundos
+    }, 60000); 
 });
