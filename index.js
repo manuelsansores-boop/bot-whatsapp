@@ -201,6 +201,11 @@ function recursiveDeleteLocks(dirPath) {
 
 // --- FUNCIÓN MAESTRA: INICIAR SESIÓN (MODIFICADA) ---
 async function startSession(sessionName, isManual = false) {
+
+    // ▼▼▼ 1. NUEVA VARIABLE DE CONTROL ▼▼▼
+    let abortandoPorFaltaDeQR = false; 
+    // ▲▲▲ FIN CAMBIO 1 ▲▲▲
+
     if (client) { 
         try { await client.destroy(); } catch(e) {} 
         client = null; 
@@ -265,25 +270,23 @@ async function startSession(sessionName, isManual = false) {
 
     // ... (El resto de tus eventos client.on('qr'), 'ready', etc. siguen igual)
     client.on('qr', async (qr) => { 
-        // ▼▼▼ FIX CRÍTICO: SI NO ES MANUAL, ABORTAR INMEDIATAMENTE ▼▼▼
+        // ▼▼▼ 2. LÓGICA DE FRENO CORREGIDA ▼▼▼
         if (!isManual) {
-            console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo intento.`);
+            console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
             io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
             
-            // Matamos el proceso del bot para que no genere bucles
+            abortandoPorFaltaDeQR = true; // <--- MARCADO COMO INTENCIONAL
+            
             try { await client.destroy(); } catch(e) {}
             client = null;
             isClientReady = false;
-            
-            // IMPORTANTE: No emitimos 'qr' ni hacemos nada más.
-            // El sistema se queda en espera (IDLE) hasta que el usuario toque el botón.
             return;
         }
-        // ▲▲▲ FIN FIX ▲▲▲
+        // ▲▲▲ FIN CAMBIO 2 ▲▲▲
 
-        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()} (MODO MANUAL)`);
+        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
         io.emit('qr', qr); 
-        io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
 
     client.on('ready', () => { 
@@ -319,6 +322,14 @@ async function startSession(sessionName, isManual = false) {
     try { 
         await client.initialize(); 
     } catch (e) { 
+
+// ▼▼▼ 3. EVITAR REINICIO SI FUE POR FALTA DE QR ▼▼▼
+        if (abortandoPorFaltaDeQR) {
+            console.log("⏸️ Inicialización abortada correctamente (Esperando acción manual).");
+            return; // <--- AQUÍ SALIMOS SIN MATAR EL PROCESO
+        }
+        // ▲▲▲ FIN CAMBIO 3 ▲▲▲
+
         console.error('❌ Error al inicializar:', e.message);
         if(e.message.includes('Target closed')) {
              console.log('🔄 Reiniciando por error de navegador en 5 segundos...');
