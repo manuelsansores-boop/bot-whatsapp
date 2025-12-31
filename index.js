@@ -176,6 +176,29 @@ function recursiveDeleteLocks(dirPath) {
     }
 }
 
+// --- NUEVA FUNCIÓN AUXILIAR: Borrado Recursivo de Locks ---
+function recursiveDeleteLocks(dirPath) {
+    if (!fs.existsSync(dirPath)) return;
+    
+    try {
+        const files = fs.readdirSync(dirPath);
+        for (const file of files) {
+            const currentPath = path.join(dirPath, file);
+            if (fs.lstatSync(currentPath).isDirectory()) {
+                recursiveDeleteLocks(currentPath); // Bajar un nivel
+            } else {
+                // Si el archivo suena a bloqueo, lo borramos
+                if (file.includes('Singleton') || file.includes('lockfile')) {
+                    fs.unlinkSync(currentPath);
+                    console.log(`🔓 Lock eliminado: ${file}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("⚠️ Error limpiando locks:", e.message);
+    }
+}
+
 // --- FUNCIÓN MAESTRA: INICIAR SESIÓN (MODIFICADA) ---
 async function startSession(sessionName, isManual = false) {
     if (client) { 
@@ -242,14 +265,25 @@ async function startSession(sessionName, isManual = false) {
 
     // ... (El resto de tus eventos client.on('qr'), 'ready', etc. siguen igual)
     client.on('qr', async (qr) => { 
-        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
-        if (isManual) {
-            console.log('(Modo Manual activado)'); 
-        } else {
-            console.log(`⚠️ ALERTA: ${sessionName} pidió QR en modo AUTO.`);
+        // ▼▼▼ FIX CRÍTICO: SI NO ES MANUAL, ABORTAR INMEDIATAMENTE ▼▼▼
+        if (!isManual) {
+            console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo intento.`);
+            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
+            
+            // Matamos el proceso del bot para que no genere bucles
+            try { await client.destroy(); } catch(e) {}
+            client = null;
+            isClientReady = false;
+            
+            // IMPORTANTE: No emitimos 'qr' ni hacemos nada más.
+            // El sistema se queda en espera (IDLE) hasta que el usuario toque el botón.
+            return;
         }
+        // ▲▲▲ FIN FIX ▲▲▲
+
+        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()} (MODO MANUAL)`);
         io.emit('qr', qr); 
-        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+        io.emit('status', `📸 ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
 
     client.on('ready', () => { 
@@ -264,9 +298,14 @@ async function startSession(sessionName, isManual = false) {
         processQueue(); 
     });
 
-    client.on('auth_failure', () => {
+    client.on('auth_failure', async () => {
         console.log('⛔ FALLO DE AUTENTICACIÓN');
-        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
+        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS - REINICIA MANUALMENTE');
+        
+        // Destruir cliente para evitar reintentos zombies
+        try { await client.destroy(); } catch(e) {}
+        client = null;
+        
         if (!isManual) borrarSesion(sessionName);
     });
 
