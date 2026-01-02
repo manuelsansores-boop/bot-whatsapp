@@ -8,14 +8,13 @@ const moment = require('moment-timezone');
 const puppeteer = require('puppeteer'); 
 const { execSync } = require('child_process');
 
-// ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼
+// ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
 try {
     console.log("🛠️ Asegurando instalación de Chrome...");
     execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
     if (fs.existsSync(cacheDir)) {
-        // 🔥 CAMBIO 1: Ordenamos para agarrar siempre la versión MÁS NUEVA
         const carpetas = fs.readdirSync(cacheDir).sort().reverse(); 
         for (const carpeta of carpetas) {
             const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
@@ -39,37 +38,54 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket', 'polling']
 });
-const PORT = process.env.PORT || 10000; // Render suele usar 10000
+const PORT = process.env.PORT || 10000; 
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
-const COLA_FILE = './data/cola.json'; // 📒 EL CUADERNO DE PERSISTENCIA
+const COLA_FILE = './data/cola.json'; 
 
 app.use(express.json());
 app.set('view engine', 'ejs');
 
-// --- VARIABLES DE ESTADO ---
+// --- VARIABLES DE ESTADO --- 
 let client = null; 
 let activeSessionName = null; 
 let isClientReady = false;
-let messageQueue = [];
+
+// --- NUEVA ESTRUCTURA DE CUBETAS (RATIO 3:2) ---
+let pdfQueue = [];
+let normalQueue = [];
+let pdfEnCiclo = 0;    
+let normalEnCiclo = 0; 
+
 let isProcessingQueue = false;
 let mensajesEnRacha = 0;
 let isPaused = false; 
 
-// Racha inicial: 5 a 9 mensajes (SOLICITUD USUARIO)
+// Racha inicial: 5 a 9 mensajes (SOLICITUD USUARIO) 
 let limiteRachaActual = Math.floor(Math.random() * (9 - 5 + 1) + 5); 
 
-// --- FUNCIONES DE PERSISTENCIA (EL "CUADERNO") ---
+// --- FUNCIONES DE PERSISTENCIA (EL "CUADERNO" ACTUALIZADO) --- 
 function saveQueue() {
     try {
-        // Guardamos todo MENOS la función 'resolve' que no se puede escribir en JSON
-        const cleanQueue = messageQueue.map(item => {
+        const cleanPdf = pdfQueue.map(item => {
             const { resolve, ...data } = item; 
             return data;
         });
+        const cleanNormal = normalQueue.map(item => {
+            const { resolve, ...data } = item; 
+            return data;
+        });
+
+        const backup = {
+            pdfQueue: cleanPdf,
+            normalQueue: cleanNormal,
+            pdfEnCiclo,
+            normalEnCiclo
+        };
+
         if (!fs.existsSync('./data')) fs.mkdirSync('./data');
-        fs.writeFileSync(COLA_FILE, JSON.stringify(cleanQueue, null, 2));
+        fs.writeFileSync(COLA_FILE, JSON.stringify(backup, null, 2));
     } catch (e) {
-        console.error("❌ Error guardando cola:", e);
+        console.error("❌ Error guardando cuaderno:", e);
     }
 }
 
@@ -77,21 +93,21 @@ function loadQueue() {
     try {
         if (fs.existsSync(COLA_FILE)) {
             const data = fs.readFileSync(COLA_FILE, 'utf8');
-            const rawQueue = JSON.parse(data);
-            // Reconstruimos la cola agregando una función resolve vacía para que no truene el código
-            messageQueue = rawQueue.map(item => ({
-                ...item,
-                resolve: () => {} // Función dummy
-            }));
-            console.log(`📒 COLA RECUPERADA: ${messageQueue.length} mensajes pendientes.`);
+            const backup = JSON.parse(data);
+            
+            pdfQueue = (backup.pdfQueue || []).map(item => ({ ...item, resolve: () => {} }));
+            normalQueue = (backup.normalQueue || []).map(item => ({ ...item, resolve: () => {} }));
+            pdfEnCiclo = backup.pdfEnCiclo || 0;
+            normalEnCiclo = backup.normalEnCiclo || 0;
+
+            console.log(`📒 MEMORIA RECUPERADA: ${pdfQueue.length} PDFs y ${normalQueue.length} Normales.`);
         }
     } catch (e) {
-        console.error("❌ Error cargando cola:", e);
-        messageQueue = [];
+        console.error("❌ Error cargando cuaderno:", e);
     }
 }
 
-// --- MIDDLEWARE DE AUTENTICACIÓN ---
+// --- MIDDLEWARE DE AUTENTICACIÓN --- 
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -101,24 +117,21 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// --- UTILIDADES ---
+// --- UTILIDADES --- 
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 
 const checkOfficeHours = () => { 
     const hora = moment().tz('America/Mexico_City').hour();
-    // Horario Laboral Seguro: 8 AM a 6 PM
     return (hora >= 8 && hora < 18) ? { isOpen: true } : { isOpen: false }; 
 };
 
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
-    // Turnos de 2 horas (Ping-Pong Simple)
     if (hora >= 8 && hora < 10) return 'chip-a';
     if (hora >= 10 && hora < 12) return 'chip-b';
     if (hora >= 12 && hora < 14) return 'chip-a';
     if (hora >= 14 && hora < 16) return 'chip-b';
     if (hora >= 16 && hora < 18) return 'chip-a';
-    
     return 'chip-a'; 
 }
 
@@ -145,26 +158,23 @@ function borrarSesion(sessionName) {
     try { 
         if (fs.existsSync(folderPath)) {
             fs.rmSync(folderPath, { recursive: true, force: true });
-            console.log(`🗑️ Carpeta ${sessionName} eliminada por corrupción.`);
+            console.log(`🗑️ Carpeta ${sessionName} eliminada.`);
         }
     } catch (e) { 
         console.error(`Error borrando ${sessionName}:`, e); 
     }
 }
 
-// --- FUNCIÓN MAESTRA: INICIAR SESIÓN ---
-// --- NUEVA FUNCIÓN AUXILIAR: Borrado Recursivo de Locks ---
+// --- FUNCIÓN AUXILIAR: Borrado Recursivo de Locks --- 
 function recursiveDeleteLocks(dirPath) {
     if (!fs.existsSync(dirPath)) return;
-    
     try {
         const files = fs.readdirSync(dirPath);
         for (const file of files) {
             const currentPath = path.join(dirPath, file);
             if (fs.lstatSync(currentPath).isDirectory()) {
-                recursiveDeleteLocks(currentPath); // Bajar un nivel
+                recursiveDeleteLocks(currentPath);
             } else {
-                // Si el archivo suena a bloqueo, lo borramos
                 if (file.includes('Singleton') || file.includes('lockfile')) {
                     fs.unlinkSync(currentPath);
                     console.log(`🔓 Lock eliminado: ${file}`);
@@ -176,35 +186,9 @@ function recursiveDeleteLocks(dirPath) {
     }
 }
 
-// --- NUEVA FUNCIÓN AUXILIAR: Borrado Recursivo de Locks ---
-function recursiveDeleteLocks(dirPath) {
-    if (!fs.existsSync(dirPath)) return;
-    
-    try {
-        const files = fs.readdirSync(dirPath);
-        for (const file of files) {
-            const currentPath = path.join(dirPath, file);
-            if (fs.lstatSync(currentPath).isDirectory()) {
-                recursiveDeleteLocks(currentPath); // Bajar un nivel
-            } else {
-                // Si el archivo suena a bloqueo, lo borramos
-                if (file.includes('Singleton') || file.includes('lockfile')) {
-                    fs.unlinkSync(currentPath);
-                    console.log(`🔓 Lock eliminado: ${file}`);
-                }
-            }
-        }
-    } catch (e) {
-        console.error("⚠️ Error limpiando locks:", e.message);
-    }
-}
-
-// --- FUNCIÓN MAESTRA: INICIAR SESIÓN (MODIFICADA) ---
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN --- 
 async function startSession(sessionName, isManual = false) {
-
-    // ▼▼▼ 1. NUEVA VARIABLE DE CONTROL ▼▼▼
     let abortandoPorFaltaDeQR = false; 
-    // ▲▲▲ FIN CAMBIO 1 ▲▲▲
 
     if (client) { 
         try { await client.destroy(); } catch(e) {} 
@@ -212,20 +196,17 @@ async function startSession(sessionName, isManual = false) {
         isClientReady = false; 
     }
     
-    // 1. MATAR PROCESOS ZOMBIE (Linux/Render)
     try {
         console.log("🔫 Asegurando que no haya Chromes zombies...");
-        execSync("pkill -f chrome || true"); // El '|| true' evita error si no hay procesos
+        execSync("pkill -f chrome || true");
     } catch (e) { }
 
     isPaused = false; 
     mensajesEnRacha = 0;
-
     activeSessionName = sessionName;
     console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
     io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
-    // 2. LIMPIEZA PROFUNDA DE LOCKS
     try {
         const folderPath = path.resolve(`./data/session-client-${sessionName}`);
         console.log(`🧹 Limpiando locks en: ${folderPath}`);
@@ -250,7 +231,6 @@ async function startSession(sessionName, isManual = false) {
             '--disable-blink-features=AutomationControlled', 
             '--disable-infobars',
             '--window-size=1920,1080',
-            // Agregamos userDataDir explícito para asegurar control
             `--user-data-dir=./data/session-client-${sessionName}`,
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
@@ -268,22 +248,16 @@ async function startSession(sessionName, isManual = false) {
         ffmpegPath: ffmpegPath
     });
 
-    // ... (El resto de tus eventos client.on('qr'), 'ready', etc. siguen igual)
     client.on('qr', async (qr) => { 
-        // ▼▼▼ 2. LÓGICA DE FRENO CORREGIDA ▼▼▼
         if (!isManual) {
             console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
             io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
-            
-            abortandoPorFaltaDeQR = true; // <--- MARCADO COMO INTENCIONAL
-            
+            abortandoPorFaltaDeQR = true; 
             try { await client.destroy(); } catch(e) {}
             client = null;
             isClientReady = false;
             return;
         }
-        // ▲▲▲ FIN CAMBIO 2 ▲▲▲
-
         console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
         io.emit('qr', qr); 
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
@@ -303,12 +277,9 @@ async function startSession(sessionName, isManual = false) {
 
     client.on('auth_failure', async () => {
         console.log('⛔ FALLO DE AUTENTICACIÓN');
-        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS - REINICIA MANUALMENTE');
-        
-        // Destruir cliente para evitar reintentos zombies
+        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
         try { await client.destroy(); } catch(e) {}
         client = null;
-        
         if (!isManual) borrarSesion(sessionName);
     });
 
@@ -322,29 +293,72 @@ async function startSession(sessionName, isManual = false) {
     try { 
         await client.initialize(); 
     } catch (e) { 
-
-// ▼▼▼ 3. EVITAR REINICIO SI FUE POR FALTA DE QR ▼▼▼
-        if (abortandoPorFaltaDeQR) {
-            console.log("⏸️ Inicialización abortada correctamente (Esperando acción manual).");
-            return; // <--- AQUÍ SALIMOS SIN MATAR EL PROCESO
-        }
-        // ▲▲▲ FIN CAMBIO 3 ▲▲▲
-
+        if (abortandoPorFaltaDeQR) return;
         console.error('❌ Error al inicializar:', e.message);
         if(e.message.includes('Target closed')) {
-             console.log('🔄 Reiniciando por error de navegador en 5 segundos...');
              setTimeout(() => process.exit(1), 5000); 
         }
     }
 }
 
-// --- GENERADOR DE PDF ---
+// --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
     try {
         console.log(`📄 Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
         
-        const htmlContent = `<html><head><style>body{font-family:Arial,sans-serif;font-size:12px;padding:20px}.ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}.header,.footer{text-align:center;margin-bottom:10px;border-bottom:2px solid #000;padding-bottom:10px}.bold{font-weight:bold}table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}.totals{margin-top:15px;text-align:right}.evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}img{max-width:100%}</style></head><body><div class="ticket"><div class="header"><p class="bold" style="font-size:1.2em">FERROLÁMINAS RICHAUD SA DE CV</p><p>FRI90092879A</p><p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p><p>Fecha: ${datos_ticket.fecha}</p><p class="bold" style="font-size:1.2em">Ticket: ${datos_ticket.folio}</p></div><div><p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p><p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p></div><div style="text-align:center;margin:10px 0;font-weight:bold">DETALLE DE COMPRA</div><table><thead><tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr></thead><tbody>${datos_ticket.productos.map(p => `<tr><td>${p.cantidad} ${p.unidad}</td><td>${p.descripcion}</td><td>$${parseFloat(p.precio).toFixed(2)}</td><td>$${(p.cantidad*p.precio).toFixed(2)}</td></tr>`).join('')}</tbody></table><div class="totals"><p>Subtotal: $${datos_ticket.subtotal}</p><p>Impuestos: $${datos_ticket.impuestos}</p><p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p></div>${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}</div></body></html>`;
+        const htmlContent = `
+        <html>
+        <head>
+            <style>
+                body{font-family:Arial,sans-serif;font-size:12px;padding:20px}
+                .ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}
+                .header,.footer{text-align:center;margin-bottom:10px;border-bottom:2px solid #000;padding-bottom:10px}
+                .bold{font-weight:bold}
+                table{width:100%;border-collapse:collapse;margin-top:10px}
+                th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}
+                .totals{margin-top:15px;text-align:right}
+                .evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}
+                img{max-width:100%}
+            </style>
+        </head>
+        <body>
+            <div class="ticket">
+                <div class="header">
+                    <p class="bold" style="font-size:1.2em">FERROLÁMINAS RICHAUD SA DE CV</p>
+                    <p>FRI90092879A</p>
+                    <p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p>
+                    <p>Fecha: ${datos_ticket.fecha}</p>
+                    <p class="bold" style="font-size:1.2em">Ticket: ${datos_ticket.folio}</p>
+                </div>
+                <div>
+                    <p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p>
+                    <p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p>
+                </div>
+                <div style="text-align:center;margin:10px 0;font-weight:bold">DETALLE DE COMPRA</div>
+                <table>
+                    <thead>
+                        <tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr>
+                    </thead>
+                    <tbody>
+                        ${datos_ticket.productos.map(p => `
+                            <tr>
+                                <td>${p.cantidad} ${p.unidad}</td>
+                                <td>${p.descripcion}</td>
+                                <td>$${parseFloat(p.precio).toFixed(2)}</td>
+                                <td>$${(p.cantidad*p.precio).toFixed(2)}</td>
+                            </tr>`).join('')}
+                    </tbody>
+                </table>
+                <div class="totals">
+                    <p>Subtotal: $${datos_ticket.subtotal}</p>
+                    <p>Impuestos: $${datos_ticket.impuestos}</p>
+                    <p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p>
+                </div>
+                ${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}
+            </div>
+        </body>
+        </html>`;
 
         const browser = await puppeteer.launch({ 
             headless: true, 
@@ -360,61 +374,80 @@ async function generarYEnviarPDF(item, clientInstance) {
         
         let chatId = item.numero.replace(/\D/g, '');
         if (chatId.length === 10) chatId = '52' + chatId;
-        chatId = chatId + '@c.us';
         
-        await clientInstance.sendMessage(chatId, media, { 
-            caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
+        await clientInstance.sendMessage(chatId + '@c.us', media, { 
+            caption: item.mensaje || "Su pedido ha sido entregado. 📄🏠" 
         });
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
         return true;
     } catch (e) {
-        console.error("❌ Error generando/enviando PDF:", e.message);
+        console.error("❌ Error PDF:", e.message);
         return false;
     }
 }
 
-// --- PROCESADOR DE COLA ---
+// --- PROCESADOR DE COLA (LÓGICA MEJORADA 3:2) --- 
 const processQueue = async () => {
-    if (isProcessingQueue || messageQueue.length === 0) return;
-    if (isPaused) return; 
+    if (isProcessingQueue || (pdfQueue.length === 0 && normalQueue.length === 0)) return;
+    if (isPaused || !isClientReady || !client) return; 
 
-    if (!isClientReady || !client) return; 
-    
-    // RACHA DE 5 a 9 MENSAJES
     if (mensajesEnRacha >= limiteRachaActual) {
         isPaused = true; 
-        // PAUSA DE 8 a 15 MINUTOS (SOLICITUD USUARIO)
         const minutosPausa = getRandomDelay(8, 15); 
         console.log(`☕ PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
         io.emit('status', `☕ Descanso (${minutosPausa} min)`);
         
         setTimeout(() => { 
-            console.log('⚡ Reanudando envíos...'); 
             isPaused = false; 
             mensajesEnRacha = 0; 
-            limiteRachaActual = getRandomDelay(5, 9); // Nueva racha aleatoria
+            limiteRachaActual = getRandomDelay(5, 9);
             processQueue(); 
-        }, minutosPausa * 60 * 1000);
+        }, minutosPausa * 60000);
         return;
     }
     
     isProcessingQueue = true;
-    const item = messageQueue[0];
-    
+
+    // --- DECISOR DE RATIO 3:2 ---
+    let item = null;
+    let tipoSeleccionado = '';
+
+    if (pdfQueue.length > 0 && pdfEnCiclo < 3) {
+        item = pdfQueue[0];
+        tipoSeleccionado = 'pdf';
+    } 
+    else if (normalQueue.length > 0 && normalEnCiclo < 2) {
+        item = normalQueue[0];
+        tipoSeleccionado = 'normal';
+    }
+    else {
+        // Si llegamos aquí es porque una de las dos colas se agotó o el ciclo se completó
+        if (pdfQueue.length > 0) {
+            item = pdfQueue[0];
+            tipoSeleccionado = 'pdf';
+            if (normalQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; } // Reiniciar si la otra está vacía
+        } else if (normalQueue.length > 0) {
+            item = normalQueue[0];
+            tipoSeleccionado = 'normal';
+            if (pdfQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; }
+        }
+    }
+
+    if (!item) { isProcessingQueue = false; return; }
+
     try {
         let cleanNumber = item.numero.replace(/\D/g, '');
         if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
         const finalNumber = cleanNumber + '@c.us';
         
-        console.log(`⏳ Procesando ${item.numero}...`);
-        
-        // Simula "escribiendo..." (4-8 segundos)
+        console.log(`⏳ Procesando ${item.numero} (${tipoSeleccionado})...`);
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
         const isRegistered = await client.isRegisteredUser(finalNumber);
         if (isRegistered) {
-            if (item.type === 'pdf') {
+            if (tipoSeleccionado === 'pdf') {
                 await generarYEnviarPDF(item, client);
+                pdfEnCiclo++;
             } else {
                 if (item.mediaUrl) {
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
@@ -422,28 +455,27 @@ const processQueue = async () => {
                 } else {
                     await client.sendMessage(finalNumber, item.mensaje);
                 }
+                normalEnCiclo++;
             }
-            if(item.resolve) item.resolve({ success: true });
             mensajesEnRacha++; 
-            console.log(`✅ Mensaje enviado a ${item.numero} (Racha: ${mensajesEnRacha}/${limiteRachaActual})`);
-        } else {
-            if(item.resolve) item.resolve({ success: false, error: 'Número no registrado' });
-            console.log(`⚠️ ${item.numero} no registrado`);
+            
+            // Si ya cumplimos los 3 PDF y 2 Normales, resetear ciclo
+            if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
+                pdfEnCiclo = 0;
+                normalEnCiclo = 0;
+            }
+
+            console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
         }
     } catch (error) {
-        console.error('❌ Error en cola:', error.message);
-        if(item.resolve) item.resolve({ success: false, error: error.message });
-        if (error.message.includes('Session closed')) {
-            console.error('💀 SESIÓN MURIÓ. REINICIANDO SISTEMA...');
-            process.exit(1); 
-        }
+        console.error('❌ Error envío:', error.message);
+        if (error.message.includes('Session closed')) process.exit(1); 
     } finally {
-        messageQueue.shift(); 
-        saveQueue(); // 💾 ACTUALIZAR CUADERNO AL TERMINAR UNO
-        
-        // Pausa entre mensajes (45-90 segundos)
+        if (tipoSeleccionado === 'pdf') pdfQueue.shift(); 
+        else normalQueue.shift();
+
+        saveQueue(); 
         const shortPause = getRandomDelay(45000, 90000); 
-        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
         setTimeout(() => { 
             isProcessingQueue = false; 
             processQueue(); 
@@ -451,144 +483,88 @@ const processQueue = async () => {
     }
 };
 
-// --- RUTAS API ---
+// --- RUTAS API --- 
 app.post('/iniciar-chip-a', authMiddleware, (req, res) => { 
     startSession('chip-a', true); 
-    res.json({ success: true, message: 'Iniciando chip-a en modo manual' }); 
+    res.json({ success: true, message: 'Iniciando chip-a manual' }); 
 });
 
 app.post('/iniciar-chip-b', authMiddleware, (req, res) => { 
     startSession('chip-b', true); 
-    res.json({ success: true, message: 'Iniciando chip-b en modo manual' }); 
-});
-
-app.post('/borrar-chip-a', authMiddleware, (req, res) => { 
-    borrarSesion('chip-a'); 
-    res.json({ success: true, message: 'Sesión chip-a eliminada' }); 
-});
-
-app.post('/borrar-chip-b', authMiddleware, (req, res) => { 
-    borrarSesion('chip-b'); 
-    res.json({ success: true, message: 'Sesión chip-b eliminada' }); 
+    res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
-    if (!isClientReady) return res.status(503).json({ error: 'Bot no está listo' });
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
+    if (!isClientReady) return res.status(503).json({ error: 'Bot no listo' });
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Cerrado' });
     
-    messageQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
-    saveQueue(); // 💾 GUARDAR EN CUADERNO
+    normalQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
+    saveQueue(); 
     processQueue();
-    res.json({ success: true, message: 'Agregado a la cola', posicion_cola: messageQueue.length });
+    res.json({ success: true, posicion: normalQueue.length });
 });
 
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
-    if (!isClientReady) return res.status(503).json({ error: 'Bot no está listo' });
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
+    if (!isClientReady) return res.status(503).json({ error: 'Bot no listo' });
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Cerrado' });
     
-    // VIP: UNSHIFT
-    messageQueue.unshift({ 
+    pdfQueue.push({ 
         type: 'pdf', 
         ...req.body, 
         pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, 
         resolve: () => {} 
     });
     
-    saveQueue(); // 💾 GUARDAR EN CUADERNO
+    saveQueue(); 
     processQueue();
-    res.json({ success: true, message: 'PDF VIP agregado', posicion_cola: 1 });
-});
-
-app.post('/detener-bot', authMiddleware, async (req, res) => { 
-    console.log('🛑 DETENIENDO SISTEMA...');
-    try { await client.destroy(); } catch(e) {} 
-    res.json({ success: true, message: 'Sistema detenido' });
-    process.exit(0); 
+    res.json({ success: true, posicion: pdfQueue.length });
 });
 
 app.post('/limpiar-cola', authMiddleware, (req, res) => { 
-    const cantidad = messageQueue.length;
-    messageQueue = []; 
-    saveQueue(); // 💾 LIMPIAR CUADERNO
-    res.json({ success: true, message: `${cantidad} mensajes eliminados` }); 
+    pdfQueue = []; 
+    normalQueue = [];
+    pdfEnCiclo = 0;
+    normalEnCiclo = 0;
+    saveQueue(); 
+    res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
-// NUEVOS ENDPOINTS PARA GESTIÓN VISUAL
 app.get('/cola-pendientes', authMiddleware, (req, res) => {
-    // Devolvemos la cola limpia (sin funciones)
-    const vistaCola = messageQueue.map((item, index) => ({
-        index,
-        numero: item.numero,
-        tipo: item.type,
-        folio: item.pdfData ? item.pdfData.datos_ticket.folio : 'N/A'
-    }));
-    res.json(vistaCola);
+    const vistaPdf = pdfQueue.map((item, i) => ({ index: i, tipo: 'pdf', numero: item.numero }));
+    const vistaNormal = normalQueue.map((item, i) => ({ index: i + pdfQueue.length, tipo: 'normal', numero: item.numero }));
+    res.json([...vistaPdf, ...vistaNormal]);
 });
 
-app.post('/borrar-item-cola', authMiddleware, (req, res) => {
-    const { index } = req.body;
-    if (index >= 0 && index < messageQueue.length) {
-        messageQueue.splice(index, 1);
-        saveQueue(); // 💾 ACTUALIZAR CUADERNO
-        res.json({ success: true, message: 'Elemento eliminado de la cola' });
-    } else {
-        res.status(400).json({ error: 'Índice inválido' });
-    }
+app.post('/detener-bot', authMiddleware, async (req, res) => { 
+    process.exit(0); 
 });
 
 app.get('/', (req, res) => res.render('index'));
 
 app.get('/status', (req, res) => {
-    const infoA = getFolderInfo('chip-a');
-    const infoB = getFolderInfo('chip-b');
     res.json({ 
         ready: isClientReady, 
-        cola: messageQueue.length, 
-        session: activeSessionName,
-        rescate: false, 
-        horario_laboral: checkOfficeHours().isOpen,
-        infoA,
-        infoB,
-        racha_actual: mensajesEnRacha,
-        limite_racha: limiteRachaActual,
-        pausa_activa: isPaused 
+        cola_total: pdfQueue.length + normalQueue.length, 
+        pdfs: pdfQueue.length,
+        normales: normalQueue.length,
+        ciclo: `P:${pdfEnCiclo}/3 N:${normalEnCiclo}/2`,
+        racha: `${mensajesEnRacha}/${limiteRachaActual}`,
+        pausa: isPaused 
     });
-});
-
-io.on('connection', (socket) => {
-    console.log('🔌 Cliente WebSocket conectado');
-    if(activeSessionName) {
-        socket.emit('status', isClientReady 
-            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
-            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`
-        );
-    } else {
-        socket.emit('status', '💤 Sistema en espera');
-    }
 });
 
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
-    loadQueue(); // 💾 RECUPERAR MEMORIA AL INICIAR
-
+    loadQueue(); 
     const turno = getTurnoActual();
-    console.log(`🕐 TURNO ACTUAL: ${turno.toUpperCase()}`);
-    
-    // Si la sesión existe, la intentamos iniciar.
-    // Si falla el QR, el nuevo código de arriba (línea ~230) EVITARÁ que se reinicie el servidor.
     if (existeSesion(turno)) {
         startSession(turno, false);
-    } else {
-        io.emit('status', `⚠️ FALTA SESIÓN ${turno.toUpperCase()}. INICIE MANUALMENTE.`);
     }
     
     setInterval(() => {
         const turnoDebido = getTurnoActual();
         if (activeSessionName && activeSessionName !== turnoDebido) {
-            if (existeSesion(turnoDebido)) {
-                console.log(`🔄 CAMBIO DE TURNO A ${turnoDebido.toUpperCase()}. REINICIANDO...`);
-                process.exit(0); 
-            }
+            process.exit(0); 
         }
     }, 60000); 
 });
