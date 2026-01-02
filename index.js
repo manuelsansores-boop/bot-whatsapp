@@ -127,12 +127,9 @@ const checkOfficeHours = () => {
 
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
-    if (hora >= 8 && hora < 10) return 'chip-a';
-    if (hora >= 10 && hora < 12) return 'chip-b';
-    if (hora >= 12 && hora < 14) return 'chip-a';
-    if (hora >= 14 && hora < 16) return 'chip-b';
-    if (hora >= 16 && hora < 18) return 'chip-a';
-    return 'chip-a'; 
+    // Turnos de 2 horas (Chip A: 8-10, 12-14, 16-18)
+    if ((hora >= 8 && hora < 10) || (hora >= 12 && hora < 14) || (hora >= 16 && hora < 18)) return 'chip-a';
+    return 'chip-b'; 
 }
 
 function getFolderInfo(sessionName) {
@@ -165,7 +162,6 @@ function borrarSesion(sessionName) {
     }
 }
 
-// --- FUNCIÓN AUXILIAR: Borrado Recursivo de Locks --- 
 function recursiveDeleteLocks(dirPath) {
     if (!fs.existsSync(dirPath)) return;
     try {
@@ -258,7 +254,6 @@ async function startSession(sessionName, isManual = false) {
             isClientReady = false;
             return;
         }
-        console.log(`📸 SE REQUIERE ESCANEO PARA ${sessionName.toUpperCase()}`);
         io.emit('qr', qr); 
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
@@ -276,7 +271,6 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('auth_failure', async () => {
-        console.log('⛔ FALLO DE AUTENTICACIÓN');
         io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
         try { await client.destroy(); } catch(e) {}
         client = null;
@@ -284,7 +278,6 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('disconnected', (reason) => { 
-        console.log('❌ Desconectado:', reason);
         isClientReady = false; 
         io.emit('status', '❌ Desconectado'); 
         if (reason === 'LOGOUT') borrarSesion(sessionName);
@@ -294,10 +287,7 @@ async function startSession(sessionName, isManual = false) {
         await client.initialize(); 
     } catch (e) { 
         if (abortandoPorFaltaDeQR) return;
-        console.error('❌ Error al inicializar:', e.message);
-        if(e.message.includes('Target closed')) {
-             setTimeout(() => process.exit(1), 5000); 
-        }
+        if(e.message.includes('Target closed')) setTimeout(() => process.exit(1), 5000); 
     }
 }
 
@@ -376,7 +366,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         if (chatId.length === 10) chatId = '52' + chatId;
         
         await clientInstance.sendMessage(chatId + '@c.us', media, { 
-            caption: item.mensaje || "Su pedido ha sido entregado. 📄🏠" 
+            caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
         });
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
         return true;
@@ -421,11 +411,10 @@ const processQueue = async () => {
         tipoSeleccionado = 'normal';
     }
     else {
-        // Si llegamos aquí es porque una de las dos colas se agotó o el ciclo se completó
         if (pdfQueue.length > 0) {
             item = pdfQueue[0];
             tipoSeleccionado = 'pdf';
-            if (normalQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; } // Reiniciar si la otra está vacía
+            if (normalQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; }
         } else if (normalQueue.length > 0) {
             item = normalQueue[0];
             tipoSeleccionado = 'normal';
@@ -441,6 +430,7 @@ const processQueue = async () => {
         const finalNumber = cleanNumber + '@c.us';
         
         console.log(`⏳ Procesando ${item.numero} (${tipoSeleccionado})...`);
+        // Simula "escribiendo..." (4-8 segundos)
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
         const isRegistered = await client.isRegisteredUser(finalNumber);
@@ -459,7 +449,6 @@ const processQueue = async () => {
             }
             mensajesEnRacha++; 
             
-            // Si ya cumplimos los 3 PDF y 2 Normales, resetear ciclo
             if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
                 pdfEnCiclo = 0;
                 normalEnCiclo = 0;
@@ -476,6 +465,7 @@ const processQueue = async () => {
 
         saveQueue(); 
         const shortPause = getRandomDelay(45000, 90000); 
+        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
         setTimeout(() => { 
             isProcessingQueue = false; 
             processQueue(); 
@@ -495,9 +485,7 @@ app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
-    if (!isClientReady) return res.status(503).json({ error: 'Bot no listo' });
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Cerrado' });
-    
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
     normalQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
     saveQueue(); 
     processQueue();
@@ -505,41 +493,55 @@ app.post('/enviar', authMiddleware, (req, res) => {
 });
 
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
-    if (!isClientReady) return res.status(503).json({ error: 'Bot no listo' });
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Cerrado' });
-    
+    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
     pdfQueue.push({ 
         type: 'pdf', 
         ...req.body, 
         pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, 
         resolve: () => {} 
     });
-    
     saveQueue(); 
     processQueue();
     res.json({ success: true, posicion: pdfQueue.length });
 });
 
+app.get('/cola-pendientes', authMiddleware, (req, res) => {
+    const vistaPdf = pdfQueue.map((item, i) => ({ 
+        index: i, 
+        tipo: 'pdf', 
+        numero: item.numero,
+        folio: item.pdfData?.datos_ticket?.folio || 'N/A'
+    }));
+    const vistaNormal = normalQueue.map((item, i) => ({ 
+        index: i + pdfQueue.length, 
+        tipo: 'normal', 
+        numero: item.numero,
+        folio: 'Aviso Salida'
+    }));
+    res.json([...vistaPdf, ...vistaNormal]);
+});
+
+app.post('/borrar-item-cola', authMiddleware, (req, res) => {
+    const { index } = req.body;
+    if (index < pdfQueue.length) {
+        pdfQueue.splice(index, 1);
+    } else {
+        normalQueue.splice(index - pdfQueue.length, 1);
+    }
+    saveQueue();
+    res.json({ success: true, message: 'Elemento eliminado' });
+});
+
 app.post('/limpiar-cola', authMiddleware, (req, res) => { 
-    pdfQueue = []; 
-    normalQueue = [];
-    pdfEnCiclo = 0;
-    normalEnCiclo = 0;
+    pdfQueue = []; normalQueue = []; pdfEnCiclo = 0; normalEnCiclo = 0;
     saveQueue(); 
     res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
-app.get('/cola-pendientes', authMiddleware, (req, res) => {
-    const vistaPdf = pdfQueue.map((item, i) => ({ index: i, tipo: 'pdf', numero: item.numero }));
-    const vistaNormal = normalQueue.map((item, i) => ({ index: i + pdfQueue.length, tipo: 'normal', numero: item.numero }));
-    res.json([...vistaPdf, ...vistaNormal]);
-});
-
 app.post('/detener-bot', authMiddleware, async (req, res) => { 
+    try { await client.destroy(); } catch(e) {}
     process.exit(0); 
 });
-
-app.get('/', (req, res) => res.render('index'));
 
 app.get('/status', (req, res) => {
     res.json({ 
@@ -549,22 +551,30 @@ app.get('/status', (req, res) => {
         normales: normalQueue.length,
         ciclo: `P:${pdfEnCiclo}/3 N:${normalEnCiclo}/2`,
         racha: `${mensajesEnRacha}/${limiteRachaActual}`,
+        session: activeSessionName,
         pausa: isPaused 
     });
+});
+
+app.get('/', (req, res) => res.render('index'));
+
+io.on('connection', (socket) => {
+    if(activeSessionName) {
+        socket.emit('status', isClientReady 
+            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
+            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`
+        );
+    }
 });
 
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
     loadQueue(); 
     const turno = getTurnoActual();
-    if (existeSesion(turno)) {
-        startSession(turno, false);
-    }
+    if (existeSesion(turno)) startSession(turno, false);
     
     setInterval(() => {
         const turnoDebido = getTurnoActual();
-        if (activeSessionName && activeSessionName !== turnoDebido) {
-            process.exit(0); 
-        }
+        if (activeSessionName && activeSessionName !== turnoDebido) process.exit(0); 
     }, 60000); 
 });

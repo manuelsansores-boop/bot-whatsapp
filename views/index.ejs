@@ -49,7 +49,7 @@
 <body>
     <div class="card">
         <h1>🏓 Bot Ping-Pong v7</h1>
-        <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2</p>
+        <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2 [cite: 1, 2]</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         <div id="ciclo-info"></div>
@@ -182,12 +182,10 @@
             if(confirm(`¿Seguro que quieres borrar la memoria del ${nombre}?`)) cmd(action);
         }
 
-        // Manejo de estados y el nuevo ciclo 3:2
         socket.on('status', (msg) => {
-            // Si el mensaje es un objeto de estado completo (de setInterval o status endpoint)
-            if (typeof msg === 'object') {
-                updateUIStatus(msg.text); // Asumiendo que enviamos texto o procesamos el string
-            } else {
+            if (typeof msg === 'object' && msg.text) {
+                updateUIStatus(msg.text);
+            } else if (typeof msg === 'string') {
                 updateUIStatus(msg);
             }
         });
@@ -210,7 +208,6 @@
             qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
         });
 
-        // Polling de estado para actualizar contadores de ciclo cada 10 segundos
         setInterval(async () => {
             const token = document.getElementById('token').value;
             if(!token) return;
@@ -219,6 +216,9 @@
                 const data = await res.json();
                 if(data.ciclo) {
                     cicloInfoDiv.innerHTML = `<span class="ciclo-badge">🔄 Ciclo actual: ${data.ciclo}</span>`;
+                }
+                if(data.text && statusBox.innerText !== data.text) {
+                    updateUIStatus(data.text);
                 }
             } catch(e) {}
         }, 10000);
