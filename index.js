@@ -106,8 +106,8 @@ const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) 
 
 const checkOfficeHours = () => { 
     const hora = moment().tz('America/Mexico_City').hour();
-    // Horario Laboral Seguro: 8 AM a 8 PM
-    return (hora >= 8 && hora < 20) ? { isOpen: true } : { isOpen: false }; 
+    // Horario Laboral Seguro: 8 AM a 6 PM
+    return (hora >= 8 && hora < 18) ? { isOpen: true } : { isOpen: false }; 
 };
 
 function getTurnoActual() {
@@ -118,7 +118,7 @@ function getTurnoActual() {
     if (hora >= 12 && hora < 14) return 'chip-a';
     if (hora >= 14 && hora < 16) return 'chip-b';
     if (hora >= 16 && hora < 18) return 'chip-a';
-    if (hora >= 18 && hora < 20) return 'chip-b';
+    
     return 'chip-a'; 
 }
 
