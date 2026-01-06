@@ -422,7 +422,22 @@ const processQueue = async () => {
         }
     }
 
-    if (!item) { isProcessingQueue = false; return; }
+   if (!item) { isProcessingQueue = false; return; }
+
+    // ▼▼▼ NUEVO CÓDIGO: SI TIENE BASURA (COMO /), LO BORRA Y SIGUE ▼▼▼
+    if (/[^\d\s\+\-\(\)]/.test(item.numero)) {
+        console.log(`🗑️ ELIMINADO POR FORMATO MALO: ${item.numero}`);
+        
+        // Lo saca de la cola
+        if (tipoSeleccionado === 'pdf') pdfQueue.shift();
+        else normalQueue.shift();
+
+        saveQueue();
+        isProcessingQueue = false;
+        processQueue(); // Pasa al siguiente inmediatamente
+        return;
+    }
+    // ▲▲▲ FIN NUEVO CÓDIGO ▲▲▲
 
     try {
         let cleanNumber = item.numero.replace(/\D/g, '');
