@@ -355,9 +355,30 @@ async function generarYEnviarPDF(item, clientInstance) {
             args: ['--no-sandbox', '--disable-setuid-sandbox'] 
         });
         const page = await browser.newPage();
-        await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+
+        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
+        await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
+
+        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
+        if (foto_evidencia) {
+            try {
+                // "Esperar hasta que la imagen exista Y esté completa"
+                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
+                await page.waitForFunction(() => {
+                    const img = document.querySelector('.evidencia img');
+                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
+                    return img && img.complete && img.naturalHeight > 0;
+                }, { timeout: 10000 }); 
+            } catch (e) {
+                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
+                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
+                console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
+            }
+        }
+
+        // 3. Generamos el PDF (Salga la foto o no)
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
-        await browser.close(); 
+        await browser.close();
 
         const b64 = Buffer.from(pdfBuffer).toString('base64');
         const media = new MessageMedia('application/pdf', b64, `Ticket-${datos_ticket.folio}.pdf`);
