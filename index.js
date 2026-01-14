@@ -300,6 +300,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         const htmlContent = `
         <html>
         <head>
+            <meta charset="UTF-8">
             <style>
                 body{font-family:Arial,sans-serif;font-size:12px;padding:20px}
                 .ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}
@@ -309,7 +310,7 @@ async function generarYEnviarPDF(item, clientInstance) {
                 th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}
                 .totals{margin-top:15px;text-align:right}
                 .evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}
-                img{max-width:100%}
+                img{max-width:100%;height:auto}
             </style>
         </head>
         <body>
@@ -345,54 +346,90 @@ async function generarYEnviarPDF(item, clientInstance) {
                     <p>Impuestos: $${datos_ticket.impuestos}</p>
                     <p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p>
                 </div>
-                ${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}
+                ${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}" onerror="this.style.display='none'"/></div>`:''}
             </div>
         </body>
         </html>`;
 
-        const browser = await puppeteer.launch({ 
+        // ▼▼▼ CONFIGURACIÓN MEJORADA DE PUPPETEER ▼▼▼
+        const browserConfig = { 
             headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
-        });
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security' // Permite cargar imágenes externas
+            ],
+            timeout: 30000
+        };
+        
+        // Usa el Chrome detectado (si existe)
+        if (RUTA_CHROME_DETECTADA) {
+            browserConfig.executablePath = RUTA_CHROME_DETECTADA;
+        }
+
+        const browser = await puppeteer.launch(browserConfig);
         const page = await browser.newPage();
 
-        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
-        await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
+        // Carga el HTML
+        await page.setContent(htmlContent, { waitUntil: 'networkidle0', timeout: 15000 });
 
-        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
+        // Si hay foto, espera que cargue (máximo 8 segundos)
         if (foto_evidencia) {
             try {
-                // "Esperar hasta que la imagen exista Y esté completa"
-                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
                 await page.waitForFunction(() => {
                     const img = document.querySelector('.evidencia img');
-                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
-                    return img && img.complete && img.naturalHeight > 0;
-                }, { timeout: 10000 }); 
+                    return img && (img.complete || img.style.display === 'none');
+                }, { timeout: 8000 }); 
             } catch (e) {
-                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
-                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
-                console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
+                console.log("⚠️ Foto no cargó. Generando PDF sin ella...");
             }
         }
 
-        // 3. Generamos el PDF (Salga la foto o no)
-        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+        // Genera el PDF
+        const pdfBuffer = await page.pdf({ 
+            format: 'A4', 
+            printBackground: true,
+            margin: { top: '20px', bottom: '20px' }
+        });
         await browser.close();
 
-        const b64 = Buffer.from(pdfBuffer).toString('base64');
-        const media = new MessageMedia('application/pdf', b64, `Ticket-${datos_ticket.folio}.pdf`);
+        // ▼▼▼ FIX CRÍTICO: CREA MessageMedia CORRECTAMENTE ▼▼▼
+        const media = new MessageMedia(
+            'application/pdf', 
+            pdfBuffer.toString('base64'), 
+            `Ticket-${datos_ticket.folio}.pdf`
+        );
         
+        // Limpia el número
         let chatId = item.numero.replace(/\D/g, '');
         if (chatId.length === 10) chatId = '52' + chatId;
+        chatId = chatId + '@c.us';
         
-        await clientInstance.sendMessage(chatId + '@c.us', media, { 
-            caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
+        // ▼▼▼ ENVÍO CON MANEJO DE ERRORES ▼▼▼
+        await clientInstance.sendMessage(chatId, media, { 
+            caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠"
         });
+        
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
         return true;
+
     } catch (e) {
-        console.error("❌ Error PDF:", e.message);
+        console.error("❌ Error completo PDF:", e);
+        
+        // ▼▼▼ FALLBACK: ENVÍA MENSAJE DE TEXTO ▼▼▼
+        try {
+            let chatId = item.numero.replace(/\D/g, '');
+            if (chatId.length === 10) chatId = '52' + chatId;
+            
+            await clientInstance.sendMessage(chatId + '@c.us', 
+                `⚠️ No se pudo generar el PDF del ticket ${item.pdfData.datos_ticket.folio}. Por favor contacte soporte.`
+            );
+        } catch(fallbackError) {
+            console.error("❌ Fallo también el mensaje de texto:", fallbackError);
+        }
+        
         return false;
     }
 }
