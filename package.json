@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-render-bot",
-  "version": "3.3.1",
-  "description": "Bot Anti-Ban con Fix FFMPEG y PurpGator Fix HTTPS",
+  "version": "3.3.0",
+  "description": "Bot Anti-Ban con Fix FFMPEG",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "whatsapp-web.js": "https://github.com/purpgator/whatsapp-web.js.git#open-wa-updates",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
     "socket.io": "^4.7.2",
     "ejs": "^3.1.9",
     "qrcode": "^1.5.3",

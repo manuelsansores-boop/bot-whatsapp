@@ -292,11 +292,17 @@ async function startSession(sessionName, isManual = false) {
 }
 
 // --- GENERADOR DE PDF --- 
+// --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
     try {
-        console.log(`📄 Generando PDF para ${item.numero}...`);
-        const { datos_ticket, foto_evidencia } = item.pdfData;
+        console.log(`📄 Procesando pedido para ${item.numero}...`);
         
+        /* =================================================================
+            INICIO DE BLOQUEO TEMPORAL (PDF APAGADO)
+            PARA REACTIVAR: BORRA ESTE BLOQUE DE COMENTARIO (EL SIMBOLO AL INICIO Y AL FINAL)
+            =================================================================
+        
+        const { datos_ticket, foto_evidencia } = item.pdfData;
         const htmlContent = `
         <html>
         <head>
@@ -356,27 +362,22 @@ async function generarYEnviarPDF(item, clientInstance) {
         });
         const page = await browser.newPage();
 
-        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
+        // 1. Cargamos el HTML rápido
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
 
-        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
+        // 2. Si hay foto, esperamos
         if (foto_evidencia) {
             try {
-                // "Esperar hasta que la imagen exista Y esté completa"
-                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
                 await page.waitForFunction(() => {
                     const img = document.querySelector('.evidencia img');
-                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
                     return img && img.complete && img.naturalHeight > 0;
                 }, { timeout: 10000 }); 
             } catch (e) {
-                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
-                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
-                console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
+                console.log("⚠️ Tiempo de espera de imagen agotado.");
             }
         }
 
-        // 3. Generamos el PDF (Salga la foto o no)
+        // 3. Generamos el PDF
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
         await browser.close();
 
@@ -390,7 +391,22 @@ async function generarYEnviarPDF(item, clientInstance) {
             caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
         });
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
-        return true;
+        
+        FIN DE BLOQUEO TEMPORAL (BORRA ESTE SIMBOLO DE ABAJO PARA REACTIVAR) --> */
+
+
+        // --- CÓDIGO ACTIVO DE EMERGENCIA (SOLO ENVÍA EL TEXTO) ---
+        // Preparamos el ID del chat
+        let chatId = item.numero.replace(/\D/g, '');
+        if (chatId.length === 10) chatId = '52' + chatId;
+
+        // Enviamos EXACTAMENTE tu mensaje original (sin PDF) para que no truene
+        await clientInstance.sendMessage(chatId + '@c.us', item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠");
+        
+        console.log(`✅ Enviado SOLO TEXTO (Provisional) a ${item.numero}`);
+        return true; 
+        // ---------------------------------------------------------
+
     } catch (e) {
         console.error("❌ Error PDF:", e.message);
         return false;
