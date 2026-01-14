@@ -469,32 +469,29 @@ const processQueue = async () => {
         // Simula "escribiendo..." (4-8 segundos)
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
-        // --- CAMBIO: ELIMINAMOS isRegisteredUser ---
-        // Simplemente enviamos, igual que en tu Bot B.
-        
-        if (tipoSeleccionado === 'pdf') {
-            await generarYEnviarPDF(item, client);
-            pdfEnCiclo++;
-        } else {
-            if (item.mediaUrl) {
-                const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
-                await client.sendMessage(finalNumber, media, { caption: item.mensaje });
+        const isRegistered = await client.isRegisteredUser(finalNumber);
+        if (isRegistered) {
+            if (tipoSeleccionado === 'pdf') {
+                await generarYEnviarPDF(item, client);
+                pdfEnCiclo++;
             } else {
-                await client.sendMessage(finalNumber, item.mensaje);
+                if (item.mediaUrl) {
+                    const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                    await client.sendMessage(finalNumber, media, { caption: item.mensaje });
+                } else {
+                    await client.sendMessage(finalNumber, item.mensaje);
+                }
+                normalEnCiclo++;
             }
-            normalEnCiclo++;
-        }
-        
-        // Asumimos éxito si no hubo error en el sendMessage
-        mensajesEnRacha++; 
-        
-        if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
-            pdfEnCiclo = 0;
-            normalEnCiclo = 0;
-        }
+            mensajesEnRacha++; 
+            
+            if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
+                pdfEnCiclo = 0;
+                normalEnCiclo = 0;
+            }
 
-        console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
-        
+            console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+        }
     } catch (error) {
         console.error('❌ Error envío:', error.message);
         if (error.message.includes('Session closed')) process.exit(1); 

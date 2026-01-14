@@ -1,23 +1,23 @@
 {
   "name": "whatsapp-render-bot",
-  "version": "3.3.0",
-  "description": "Bot Anti-Ban con Fix FFMPEG",
+  "version": "4.0.0",
+  "description": "Bot Anti-Ban con PDF Fix",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome@stable"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js#main",
-    "socket.io": "^4.7.2",
-    "ejs": "^3.1.9",
-    "qrcode": "^1.5.3",
-    "puppeteer": "^23.0.0",
-    "moment-timezone": "^0.5.43",
+    "express": "^4.19.2",
+    "whatsapp-web.js": "^1.25.0",
+    "socket.io": "^4.7.5",
+    "ejs": "^3.1.10",
+    "qrcode": "^1.5.4",
+    "puppeteer": "^23.11.1",
+    "moment-timezone": "^0.5.45",
     "ffmpeg-static": "^5.2.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.0.0"
   }
 }
