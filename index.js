@@ -241,7 +241,14 @@ async function startSession(sessionName, isManual = false) {
         }),
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
-        ffmpegPath: ffmpegPath
+        ffmpegPath: ffmpegPath,
+
+        // ▼▼▼▼▼▼ PEGA ESTO AQUÍ (NO OLVIDES LA COMA EN LA LÍNEA DE ARRIBA) ▼▼▼▼▼▼
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        }
+        // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
     });
 
     client.on('qr', async (qr) => { 
