@@ -244,6 +244,16 @@ async function startSession(sessionName, isManual = false) {
         ffmpegPath: ffmpegPath
     });
 
+    // ▼▼▼ AGREGA ESTAS 4 LÍNEAS ▼▼▼
+    const envioOriginal = client.sendMessage.bind(client);
+    client.sendMessage = async (chatId, content, options) => {
+        return await envioOriginal(chatId, content, options).catch(err => {
+            if (err.message?.includes('markedUnread')) return { success: true };
+            throw err;
+        });
+    };
+    // ▲▲▲ FIN - NO TOQUES NADA MÁS ▲▲▲
+
     client.on('qr', async (qr) => { 
         if (!isManual) {
             console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
@@ -293,6 +303,8 @@ async function startSession(sessionName, isManual = false) {
 
 // --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
+    let pdfEnviado = false;
+    
     try {
         console.log(`📄 Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
@@ -351,31 +363,24 @@ async function generarYEnviarPDF(item, clientInstance) {
         </body>
         </html>`;
 
-        // ▼▼▼ CONFIGURACIÓN MEJORADA DE PUPPETEER ▼▼▼
         const browserConfig = { 
             headless: true, 
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--disable-web-security' // Permite cargar imágenes externas
-            ],
-            timeout: 30000
+                '--disable-gpu'
+            ]
         };
         
-        // Usa el Chrome detectado (si existe)
         if (RUTA_CHROME_DETECTADA) {
             browserConfig.executablePath = RUTA_CHROME_DETECTADA;
         }
 
         const browser = await puppeteer.launch(browserConfig);
         const page = await browser.newPage();
-
-        // Carga el HTML
         await page.setContent(htmlContent, { waitUntil: 'networkidle0', timeout: 15000 });
 
-        // Si hay foto, espera que cargue (máximo 8 segundos)
         if (foto_evidencia) {
             try {
                 await page.waitForFunction(() => {
@@ -383,54 +388,68 @@ async function generarYEnviarPDF(item, clientInstance) {
                     return img && (img.complete || img.style.display === 'none');
                 }, { timeout: 8000 }); 
             } catch (e) {
-                console.log("⚠️ Foto no cargó. Generando PDF sin ella...");
+                console.log("⚠️ Foto no cargó a tiempo");
             }
         }
 
-        // Genera el PDF
         const pdfBuffer = await page.pdf({ 
             format: 'A4', 
-            printBackground: true,
-            margin: { top: '20px', bottom: '20px' }
+            printBackground: true 
         });
         await browser.close();
 
-        // ▼▼▼ FIX CRÍTICO: CREA MessageMedia CORRECTAMENTE ▼▼▼
         const media = new MessageMedia(
             'application/pdf', 
             pdfBuffer.toString('base64'), 
             `Ticket-${datos_ticket.folio}.pdf`
         );
         
-        // Limpia el número
         let chatId = item.numero.replace(/\D/g, '');
         if (chatId.length === 10) chatId = '52' + chatId;
         chatId = chatId + '@c.us';
         
-        // ▼▼▼ ENVÍO CON MANEJO DE ERRORES ▼▼▼
-        await clientInstance.sendMessage(chatId, media, { 
-            caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠"
-        });
+        // ▼▼▼ ENVÍO CON PROTECCIÓN CONTRA sendSeen ▼▼▼
+        try {
+            await clientInstance.sendMessage(chatId, media, { 
+                caption: item.mensaje || "Su pedido ha sido entregado. 📄🏠"
+            });
+            pdfEnviado = true;
+            console.log(`✅ PDF enviado a ${item.numero}`);
+        } catch (sendError) {
+            // Si el error es solo de markedUnread, consideramos que SÍ se envió
+            if (sendError.message && sendError.message.includes('markedUnread')) {
+                pdfEnviado = true;
+                console.log(`✅ PDF enviado (ignorando error sendSeen) a ${item.numero}`);
+            } else {
+                throw sendError; // Otros errores sí los propagamos
+            }
+        }
         
-        console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
         return true;
 
     } catch (e) {
-        console.error("❌ Error completo PDF:", e);
+        console.error("❌ Error generando PDF:", e.message);
         
-        // ▼▼▼ FALLBACK: ENVÍA MENSAJE DE TEXTO ▼▼▼
-        try {
-            let chatId = item.numero.replace(/\D/g, '');
-            if (chatId.length === 10) chatId = '52' + chatId;
-            
-            await clientInstance.sendMessage(chatId + '@c.us', 
-                `⚠️ No se pudo generar el PDF del ticket ${item.pdfData.datos_ticket.folio}. Por favor contacte soporte.`
-            );
-        } catch(fallbackError) {
-            console.error("❌ Fallo también el mensaje de texto:", fallbackError);
+        // Solo intentamos fallback si NO se envió el PDF
+        if (!pdfEnviado) {
+            try {
+                let chatId = item.numero.replace(/\D/g, '');
+                if (chatId.length === 10) chatId = '52' + chatId;
+                
+                await clientInstance.sendMessage(chatId + '@c.us', 
+                    `⚠️ Error técnico. Ticket ${item.pdfData.datos_ticket.folio} no disponible. Contacte soporte.`
+                ).catch(fallbackError => {
+                    // Si el fallback también falla por sendSeen, lo ignoramos
+                    if (!fallbackError.message.includes('markedUnread')) {
+                        throw fallbackError;
+                    }
+                });
+            } catch(fallbackError) {
+                console.error("❌ Fallback también falló:", fallbackError.message);
+            }
         }
         
-        return false;
+        return pdfEnviado; // Devuelve true si al menos se envió el PDF
     }
 }
 
