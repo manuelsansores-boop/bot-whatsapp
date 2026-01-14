@@ -182,7 +182,7 @@ function recursiveDeleteLocks(dirPath) {
     }
 }
 
-// --- FUNCIÓN MAESTRA: INICIAR SESIÓN --- 
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN (CON FIX REAL) --- 
 async function startSession(sessionName, isManual = false) {
     let abortandoPorFaltaDeQR = false; 
 
@@ -244,15 +244,30 @@ async function startSession(sessionName, isManual = false) {
         ffmpegPath: ffmpegPath
     });
 
-    // ▼▼▼ AGREGA ESTAS 4 LÍNEAS ▼▼▼
+    // ============================================
+    // 🔧 FIX REAL: ENVÍA Y LUEGO IGNORA EL ERROR
+    // ============================================
     const envioOriginal = client.sendMessage.bind(client);
-    client.sendMessage = async (chatId, content, options) => {
-        return await envioOriginal(chatId, content, options).catch(err => {
-            if (err.message?.includes('markedUnread')) return { success: true };
+    client.sendMessage = async (chatId, content, options = {}) => {
+        let mensajeEnviado = null;
+        
+        try {
+            // Intentamos enviar normalmente
+            mensajeEnviado = await envioOriginal(chatId, content, options);
+            return mensajeEnviado;
+        } catch (err) {
+            // Si el error es SOLO de markedUnread Y el mensaje se envió
+            if (err.message?.includes('markedUnread') && mensajeEnviado) {
+                console.log('⚠️ Error sendSeen ignorado (mensaje SÍ enviado)');
+                return mensajeEnviado;
+            }
+            
+            // Si el error NO es de markedUnread, lo lanzamos
+            console.error('❌ Error real de envío:', err.message);
             throw err;
-        });
+        }
     };
-    // ▲▲▲ FIN - NO TOQUES NADA MÁS ▲▲▲
+    // ============================================
 
     client.on('qr', async (qr) => { 
         if (!isManual) {
