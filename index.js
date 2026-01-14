@@ -292,17 +292,11 @@ async function startSession(sessionName, isManual = false) {
 }
 
 // --- GENERADOR DE PDF --- 
-// --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
     try {
-        console.log(`📄 Procesando pedido para ${item.numero}...`);
-        
-        /* =================================================================
-            INICIO DE BLOQUEO TEMPORAL (PDF APAGADO)
-            PARA REACTIVAR: BORRA ESTE BLOQUE DE COMENTARIO (EL SIMBOLO AL INICIO Y AL FINAL)
-            =================================================================
-        
+        console.log(`📄 Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
+        
         const htmlContent = `
         <html>
         <head>
@@ -362,22 +356,27 @@ async function generarYEnviarPDF(item, clientInstance) {
         });
         const page = await browser.newPage();
 
-        // 1. Cargamos el HTML rápido
+        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
 
-        // 2. Si hay foto, esperamos
+        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
         if (foto_evidencia) {
             try {
+                // "Esperar hasta que la imagen exista Y esté completa"
+                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
                 await page.waitForFunction(() => {
                     const img = document.querySelector('.evidencia img');
+                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
                     return img && img.complete && img.naturalHeight > 0;
                 }, { timeout: 10000 }); 
             } catch (e) {
-                console.log("⚠️ Tiempo de espera de imagen agotado.");
+                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
+                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
+                console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
             }
         }
 
-        // 3. Generamos el PDF
+        // 3. Generamos el PDF (Salga la foto o no)
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
         await browser.close();
 
@@ -391,22 +390,7 @@ async function generarYEnviarPDF(item, clientInstance) {
             caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
         });
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
-        
-        FIN DE BLOQUEO TEMPORAL (BORRA ESTE SIMBOLO DE ABAJO PARA REACTIVAR) --> */
-
-
-        // --- CÓDIGO ACTIVO DE EMERGENCIA (SOLO ENVÍA EL TEXTO) ---
-        // Preparamos el ID del chat
-        let chatId = item.numero.replace(/\D/g, '');
-        if (chatId.length === 10) chatId = '52' + chatId;
-
-        // Enviamos EXACTAMENTE tu mensaje original (sin PDF) para que no truene
-        await clientInstance.sendMessage(chatId + '@c.us', item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠");
-        
-        console.log(`✅ Enviado SOLO TEXTO (Provisional) a ${item.numero}`);
-        return true; 
-        // ---------------------------------------------------------
-
+        return true;
     } catch (e) {
         console.error("❌ Error PDF:", e.message);
         return false;
@@ -485,29 +469,32 @@ const processQueue = async () => {
         // Simula "escribiendo..." (4-8 segundos)
         await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
         
-        const isRegistered = await client.isRegisteredUser(finalNumber);
-        if (isRegistered) {
-            if (tipoSeleccionado === 'pdf') {
-                await generarYEnviarPDF(item, client);
-                pdfEnCiclo++;
+        // --- CAMBIO: ELIMINAMOS isRegisteredUser ---
+        // Simplemente enviamos, igual que en tu Bot B.
+        
+        if (tipoSeleccionado === 'pdf') {
+            await generarYEnviarPDF(item, client);
+            pdfEnCiclo++;
+        } else {
+            if (item.mediaUrl) {
+                const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                await client.sendMessage(finalNumber, media, { caption: item.mensaje });
             } else {
-                if (item.mediaUrl) {
-                    const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
-                    await client.sendMessage(finalNumber, media, { caption: item.mensaje });
-                } else {
-                    await client.sendMessage(finalNumber, item.mensaje);
-                }
-                normalEnCiclo++;
+                await client.sendMessage(finalNumber, item.mensaje);
             }
-            mensajesEnRacha++; 
-            
-            if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
-                pdfEnCiclo = 0;
-                normalEnCiclo = 0;
-            }
-
-            console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+            normalEnCiclo++;
         }
+        
+        // Asumimos éxito si no hubo error en el sendMessage
+        mensajesEnRacha++; 
+        
+        if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
+            pdfEnCiclo = 0;
+            normalEnCiclo = 0;
+        }
+
+        console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+        
     } catch (error) {
         console.error('❌ Error envío:', error.message);
         if (error.message.includes('Session closed')) process.exit(1); 
