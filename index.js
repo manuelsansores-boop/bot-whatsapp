@@ -298,8 +298,9 @@ async function startSession(sessionName, isManual = false) {
     }
 }
 
-// --- GENERADOR DE PDF --- 
+// --- GENERADOR DE PDF (CON FIX DE MEMORIA PARA RENDER) --- 
 async function generarYEnviarPDF(item, clientInstance) {
+    let browser = null; // Definimos browser afuera para asegurarnos de cerrarlo
     try {
         console.log(`📄 Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
@@ -357,35 +358,45 @@ async function generarYEnviarPDF(item, clientInstance) {
         </body>
         </html>`;
 
-        const browser = await puppeteer.launch({ 
-            headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+        // ▼▼▼ AJUSTE CRÍTICO: Configuración ligera para que no se congele en Render ▼▼▼
+        browser = await puppeteer.launch({ 
+            headless: 'new', 
+            // Usamos la ruta detectada al inicio si existe, para no duplicar Chromes
+            executablePath: RUTA_CHROME_DETECTADA || undefined,
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // OBLIGATORIO: Evita que crashee por falta de memoria compartida
+                '--disable-gpu',           // Ahorra RAM
+                '--single-process',        // Ahorra mucha RAM
+                '--no-zygote'
+            ] 
         });
+        // ▲▲▲ FIN AJUSTE ▲▲▲
+
         const page = await browser.newPage();
 
-        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
+        // 1. Cargamos el HTML rápido
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
 
-        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
+        // 2. Si hay foto, esperamos
         if (foto_evidencia) {
             try {
-                // "Esperar hasta que la imagen exista Y esté completa"
-                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
                 await page.waitForFunction(() => {
                     const img = document.querySelector('.evidencia img');
-                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
                     return img && img.complete && img.naturalHeight > 0;
                 }, { timeout: 10000 }); 
             } catch (e) {
-                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
-                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
                 console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
             }
         }
 
-        // 3. Generamos el PDF (Salga la foto o no)
+        // 3. Generamos el PDF
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+        
+        // Cerramos navegador AQUÍ para liberar memoria antes de enviar
         await browser.close();
+        browser = null; 
 
         const b64 = Buffer.from(pdfBuffer).toString('base64');
         const media = new MessageMedia('application/pdf', b64, `Ticket-${datos_ticket.folio}.pdf`);
@@ -398,8 +409,11 @@ async function generarYEnviarPDF(item, clientInstance) {
         });
         console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
         return true;
+
     } catch (e) {
         console.error("❌ Error PDF:", e.message);
+        // Aseguramos cierre de emergencia si falla algo
+        if (browser) await browser.close();
         return false;
     }
 }
