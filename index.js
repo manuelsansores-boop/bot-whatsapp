@@ -358,8 +358,18 @@ async function generarYEnviarPDF(item, clientInstance) {
         </html>`;
 
         const browser = await puppeteer.launch({ 
-            headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+            headless: 'new', // Modo ligero moderno
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // Vital para Render: evita usar memoria compartida limitada
+                '--disable-accelerated-2d-canvas', // Apaga gráficos innecesarios
+                '--no-first-run',
+                '--single-process', // Intenta no abrir múltiples sub-procesos
+                '--disable-gpu', // No hay monitor, no necesitamos GPU
+                '--js-flags="--max-old-space-size=512"' // Limita la RAM interna a 512MB
+            ],
+            executablePath: RUTA_CHROME_DETECTADA || undefined 
         });
         const page = await browser.newPage();
 
