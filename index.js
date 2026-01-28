@@ -49,6 +49,7 @@ app.set('view engine', 'ejs');
 let client = null; 
 let activeSessionName = null; 
 let isClientReady = false;
+let isManualStart = false; // ← ✅ NUEVA VARIABLE GLOBAL PARA SOLUCIONAR EL BUG
 
 // --- NUEVA ESTRUCTURA DE CUBETAS (RATIO 3:2) ---
 let pdfQueue = [];
@@ -151,11 +152,20 @@ function existeSesion(sessionName) {
 }
 
 function borrarSesion(sessionName) {
-    const folderPath = `./data/session-client-${sessionName}`;
+    const folderPath = path.resolve(`./data/session-client-${sessionName}`);
     try { 
+        // 1. Intentamos matar el proceso del bot si está activo en esta sesión
+        if (activeSessionName === sessionName && client) {
+            try { client.destroy(); } catch(e) {}
+            client = null;
+        }
+
+        // 2. FUERZA BRUTA: Usamos el comando de Linux 'rm -rf' en lugar de fs.rmSync
+        // Esto ignora bloqueos de archivos y borra todo sí o sí.
         if (fs.existsSync(folderPath)) {
-            fs.rmSync(folderPath, { recursive: true, force: true });
-            console.log(`🗑️ Carpeta ${sessionName} eliminada.`);
+            console.log(`☢️ Ejecutando borrado nuclear en: ${sessionName}...`);
+            execSync(`rm -rf "${folderPath}"`); 
+            console.log(`🗑️ Carpeta ${sessionName} eliminada CORRECTAMENTE.`);
         }
     } catch (e) { 
         console.error(`Error borrando ${sessionName}:`, e); 
@@ -186,6 +196,9 @@ function recursiveDeleteLocks(dirPath) {
 async function startSession(sessionName, isManual = false) {
     let abortandoPorFaltaDeQR = false; 
 
+    // ✅ GUARDA EL VALOR EN LA VARIABLE GLOBAL
+    isManualStart = isManual;
+
     if (client) { 
         try { await client.destroy(); } catch(e) {} 
         client = null; 
@@ -200,7 +213,7 @@ async function startSession(sessionName, isManual = false) {
     isPaused = false; 
     mensajesEnRacha = 0;
     activeSessionName = sessionName;
-    console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
+    console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode) - Modo: ${isManual ? 'MANUAL' : 'AUTO'}`);
     io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
     try {
@@ -241,18 +254,14 @@ async function startSession(sessionName, isManual = false) {
         }),
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
-        ffmpegPath: ffmpegPath,
-
-        // 👇👇👇 AGREGA ESTO AQUÍ 👇👇👇
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/refs/heads/main/html/2.3000.1031490220-alpha.html',
-        }
-        // 👆👆👆 FIN DEL AGREGADO 👆👆👆
+        ffmpegPath: ffmpegPath
     });
 
+    // ✅ AHORA USA LA VARIABLE GLOBAL isManualStart
     client.on('qr', async (qr) => { 
-        if (!isManual) {
+        console.log(`📸 Evento QR disparado. isManualStart = ${isManualStart}`);
+        
+        if (!isManualStart) { 
             console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
             io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
             abortandoPorFaltaDeQR = true; 
@@ -261,6 +270,8 @@ async function startSession(sessionName, isManual = false) {
             isClientReady = false;
             return;
         }
+        
+        console.log(`✅ Emitiendo QR para escanear (sesión: ${sessionName})`);
         io.emit('qr', qr); 
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
@@ -278,21 +289,25 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('auth_failure', async () => {
+        console.log('⛔ FALLO DE AUTENTICACIÓN');
         io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
         try { await client.destroy(); } catch(e) {}
         client = null;
-        if (!isManual) borrarSesion(sessionName);
+        if (!isManualStart) borrarSesion(sessionName);
     });
 
     client.on('disconnected', (reason) => { 
+        console.log(`❌ Desconectado. Razón: ${reason}`);
         isClientReady = false; 
         io.emit('status', '❌ Desconectado'); 
         if (reason === 'LOGOUT') borrarSesion(sessionName);
     });
 
     try { 
+        console.log('🚀 Inicializando cliente WhatsApp...');
         await client.initialize(); 
     } catch (e) { 
+        console.error('❌ Error en initialize:', e.message);
         if (abortandoPorFaltaDeQR) return;
         if(e.message.includes('Target closed')) setTimeout(() => process.exit(1), 5000); 
     }
@@ -537,6 +552,16 @@ app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
     res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
 
+app.post('/borrar-chip-a', authMiddleware, (req, res) => { 
+    borrarSesion('chip-a'); 
+    res.json({ success: true, message: 'Memoria Chip A borrada correctamente' }); 
+});
+
+app.post('/borrar-chip-b', authMiddleware, (req, res) => { 
+    borrarSesion('chip-b'); 
+    res.json({ success: true, message: 'Memoria Chip B borrada correctamente' }); 
+});
+
 app.post('/enviar', authMiddleware, (req, res) => {
     if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
     normalQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
@@ -612,6 +637,7 @@ app.get('/status', (req, res) => {
 app.get('/', (req, res) => res.render('index'));
 
 io.on('connection', (socket) => {
+    console.log('🔌 Cliente conectado al Socket.IO');
     if(activeSessionName) {
         socket.emit('status', isClientReady 
             ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
