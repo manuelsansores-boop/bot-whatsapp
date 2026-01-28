@@ -150,12 +150,22 @@ function existeSesion(sessionName) {
     return fs.existsSync(`./data/session-client-${sessionName}`); 
 }
 
+// BUSCA ESTA FUNCIÓN Y CÁMBIALA POR ESTO:
 function borrarSesion(sessionName) {
-    const folderPath = `./data/session-client-${sessionName}`;
+    const folderPath = path.resolve(`./data/session-client-${sessionName}`);
     try { 
+        // 1. Intentamos matar el proceso del bot si está activo en esta sesión
+        if (activeSessionName === sessionName && client) {
+            try { client.destroy(); } catch(e) {}
+            client = null;
+        }
+
+        // 2. FUERZA BRUTA: Usamos el comando de Linux 'rm -rf' en lugar de fs.rmSync
+        // Esto ignora bloqueos de archivos y borra todo sí o sí.
         if (fs.existsSync(folderPath)) {
-            fs.rmSync(folderPath, { recursive: true, force: true });
-            console.log(`🗑️ Carpeta ${sessionName} eliminada.`);
+            console.log(`☢️ Ejecutando borrado nuclear en: ${sessionName}...`);
+            execSync(`rm -rf "${folderPath}"`); 
+            console.log(`🗑️ Carpeta ${sessionName} eliminada CORRECTAMENTE.`);
         }
     } catch (e) { 
         console.error(`Error borrando ${sessionName}:`, e); 
