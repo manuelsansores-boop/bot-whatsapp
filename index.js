@@ -150,22 +150,12 @@ function existeSesion(sessionName) {
     return fs.existsSync(`./data/session-client-${sessionName}`); 
 }
 
-// BUSCA ESTA FUNCIÓN Y CÁMBIALA POR ESTO:
 function borrarSesion(sessionName) {
-    const folderPath = path.resolve(`./data/session-client-${sessionName}`);
+    const folderPath = `./data/session-client-${sessionName}`;
     try { 
-        // 1. Intentamos matar el proceso del bot si está activo en esta sesión
-        if (activeSessionName === sessionName && client) {
-            try { client.destroy(); } catch(e) {}
-            client = null;
-        }
-
-        // 2. FUERZA BRUTA: Usamos el comando de Linux 'rm -rf' en lugar de fs.rmSync
-        // Esto ignora bloqueos de archivos y borra todo sí o sí.
         if (fs.existsSync(folderPath)) {
-            console.log(`☢️ Ejecutando borrado nuclear en: ${sessionName}...`);
-            execSync(`rm -rf "${folderPath}"`); 
-            console.log(`🗑️ Carpeta ${sessionName} eliminada CORRECTAMENTE.`);
+            fs.rmSync(folderPath, { recursive: true, force: true });
+            console.log(`🗑️ Carpeta ${sessionName} eliminada.`);
         }
     } catch (e) { 
         console.error(`Error borrando ${sessionName}:`, e); 
@@ -251,7 +241,14 @@ async function startSession(sessionName, isManual = false) {
         }),
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
-        ffmpegPath: ffmpegPath
+        ffmpegPath: ffmpegPath,
+
+        // 👇👇👇 AGREGA ESTO AQUÍ 👇👇👇
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/refs/heads/main/html/2.3000.1031490220-alpha.html',
+        }
+        // 👆👆👆 FIN DEL AGREGADO 👆👆👆
     });
 
     client.on('qr', async (qr) => { 
@@ -539,18 +536,6 @@ app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
     startSession('chip-b', true); 
     res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
-
-// 👇👇👇 AQUÍ ESTÁN LAS RUTAS NUEVAS PARA BORRAR LA MEMORIA 👇👇👇
-app.post('/borrar-chip-a', authMiddleware, (req, res) => { 
-    borrarSesion('chip-a'); 
-    res.json({ success: true, message: 'Memoria Chip A borrada correctamente' }); 
-});
-
-app.post('/borrar-chip-b', authMiddleware, (req, res) => { 
-    borrarSesion('chip-b'); 
-    res.json({ success: true, message: 'Memoria Chip B borrada correctamente' }); 
-});
-// 👆👆👆 FIN RUTAS NUEVAS 👆👆👆
 
 app.post('/enviar', authMiddleware, (req, res) => {
     if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
