@@ -243,12 +243,7 @@ async function startSession(sessionName, isManual = false) {
         qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath,
 
-        // 👇👇👇 AGREGA ESTO AQUÍ 👇👇👇
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/refs/heads/main/html/2.3000.1031490220-alpha.html',
-        }
-        // 👆👆👆 FIN DEL AGREGADO 👆👆👆
+
     });
 
     client.on('qr', async (qr) => { 
