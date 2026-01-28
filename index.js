@@ -241,9 +241,7 @@ async function startSession(sessionName, isManual = false) {
         }),
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
-        ffmpegPath: ffmpegPath,
-
-
+        ffmpegPath: ffmpegPath
     });
 
     client.on('qr', async (qr) => { 
@@ -531,6 +529,18 @@ app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
     startSession('chip-b', true); 
     res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
+
+// 👇👇👇 AQUÍ ESTÁN LAS RUTAS NUEVAS PARA BORRAR LA MEMORIA 👇👇👇
+app.post('/borrar-chip-a', authMiddleware, (req, res) => { 
+    borrarSesion('chip-a'); 
+    res.json({ success: true, message: 'Memoria Chip A borrada correctamente' }); 
+});
+
+app.post('/borrar-chip-b', authMiddleware, (req, res) => { 
+    borrarSesion('chip-b'); 
+    res.json({ success: true, message: 'Memoria Chip B borrada correctamente' }); 
+});
+// 👆👆👆 FIN RUTAS NUEVAS 👆👆👆
 
 app.post('/enviar', authMiddleware, (req, res) => {
     if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
