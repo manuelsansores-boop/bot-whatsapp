@@ -90,6 +90,7 @@ function saveQueue() {
 }
 
 function loadQueue() {
+    return;
     try {
         if (fs.existsSync(COLA_FILE)) {
             const data = fs.readFileSync(COLA_FILE, 'utf8');
