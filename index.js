@@ -321,10 +321,7 @@ async function startSession(sessionName, isManual = false) {
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath,
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/refs/heads/main/html/2.3000.1031490220-alpha.html',
-        }
+        
     });
     console.log('✅ [WHATSAPP-2] Cliente WhatsApp creado');
 
