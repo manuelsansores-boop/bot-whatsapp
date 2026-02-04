@@ -8,42 +8,75 @@ const moment = require('moment-timezone');
 const puppeteer = require('puppeteer'); 
 const { execSync } = require('child_process');
 
+console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
+
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
 try {
-    console.log("🛠️ Asegurando instalación de Chrome...");
+    console.log("🛠️ [CHROME-1] Asegurando instalación de Chrome...");
     execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
+    console.log("✅ [CHROME-2] Comando de instalación ejecutado");
+    
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
+    console.log(`📁 [CHROME-3] Verificando directorio cache: ${cacheDir}`);
+    
     if (fs.existsSync(cacheDir)) {
+        console.log(`✅ [CHROME-4] Directorio cache existe`);
         const carpetas = fs.readdirSync(cacheDir).sort().reverse(); 
+        console.log(`📂 [CHROME-5] Carpetas encontradas: ${carpetas.join(', ')}`);
+        
         for (const carpeta of carpetas) {
             const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
+            console.log(`🔍 [CHROME-6] Verificando ruta: ${posibleRuta}`);
+            
             if (fs.existsSync(posibleRuta)) {
                 RUTA_CHROME_DETECTADA = posibleRuta;
-                console.log(`✅ Chrome seleccionado (Versión más nueva): ${posibleRuta}`);
+                console.log(`✅ [CHROME-7] Chrome seleccionado (Versión más nueva): ${posibleRuta}`);
                 break;
+            } else {
+                console.log(`❌ [CHROME-8] No existe: ${posibleRuta}`);
             }
         }
+    } else {
+        console.log(`⚠️ [CHROME-9] Directorio cache NO existe: ${cacheDir}`);
+    }
+    
+    if (!RUTA_CHROME_DETECTADA) {
+        console.log('⚠️ [CHROME-10] No se detectó Chrome, usando default de Puppeteer');
     }
 } catch (error) { 
-    console.error("⚠️ Alerta Chrome:", error.message); 
+    console.error("❌ [CHROME-ERROR] Error en instalación Chrome:", error.message);
+    console.error("📜 [CHROME-ERROR] Stack:", error.stack); 
 }
 
+console.log('🔧 [FFMPEG-1] Configurando FFMPEG...');
 const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
+console.log(`✅ [FFMPEG-2] FFMPEG path: ${ffmpegPath}`);
 
+console.log('🌐 [EXPRESS-1] Creando servidor Express...');
 const app = express();
 const server = http.createServer(app);
+console.log('✅ [EXPRESS-2] Servidor HTTP creado');
+
+console.log('🔌 [SOCKET-1] Inicializando Socket.IO...');
 const io = new Server(server, { 
     cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket', 'polling']
 });
+console.log('✅ [SOCKET-2] Socket.IO configurado');
+
 const PORT = process.env.PORT || 10000; 
 const MI_TOKEN_SECRETO = process.env.AUTH_TOKEN;
 const COLA_FILE = './data/cola.json'; 
 
+console.log(`⚙️ [CONFIG] Puerto: ${PORT}`);
+console.log(`🔐 [CONFIG] Token existe: ${!!MI_TOKEN_SECRETO}`);
+
+console.log('📦 [MIDDLEWARE-1] Configurando middleware...');
 app.use(express.json());
 app.set('view engine', 'ejs');
+console.log('✅ [MIDDLEWARE-2] Middleware configurado');
 
 // --- VARIABLES DE ESTADO --- 
 let client = null; 
@@ -63,9 +96,12 @@ let isPaused = false;
 // Racha inicial: 5 a 9 mensajes (SOLICITUD USUARIO) 
 let limiteRachaActual = Math.floor(Math.random() * (9 - 5 + 1) + 5); 
 
+console.log('✅ [VARS] Variables globales inicializadas');
+
 // --- FUNCIONES DE PERSISTENCIA (EL "CUADERNO" ACTUALIZADO) --- 
 function saveQueue() {
     try {
+        console.log(`💾 [SAVE-1] Guardando cola: ${pdfQueue.length} PDFs, ${normalQueue.length} Normales`);
         const cleanPdf = pdfQueue.map(item => {
             const { resolve, ...data } = item; 
             return data;
@@ -82,16 +118,23 @@ function saveQueue() {
             normalEnCiclo
         };
 
-        if (!fs.existsSync('./data')) fs.mkdirSync('./data');
+        if (!fs.existsSync('./data')) {
+            console.log('📁 [SAVE-2] Creando directorio ./data');
+            fs.mkdirSync('./data');
+        }
+        
         fs.writeFileSync(COLA_FILE, JSON.stringify(backup, null, 2));
+        console.log('✅ [SAVE-3] Cola guardada exitosamente');
     } catch (e) {
-        console.error("❌ Error guardando cuaderno:", e);
+        console.error("❌ [SAVE-ERROR] Error guardando cuaderno:", e);
     }
 }
 
 function loadQueue() {
     try {
+        console.log(`🔍 [LOAD-1] Buscando cola guardada: ${COLA_FILE}`);
         if (fs.existsSync(COLA_FILE)) {
+            console.log('✅ [LOAD-2] Archivo de cola encontrado');
             const data = fs.readFileSync(COLA_FILE, 'utf8');
             const backup = JSON.parse(data);
             
@@ -100,10 +143,12 @@ function loadQueue() {
             pdfEnCiclo = backup.pdfEnCiclo || 0;
             normalEnCiclo = backup.normalEnCiclo || 0;
 
-            console.log(`📒 MEMORIA RECUPERADA: ${pdfQueue.length} PDFs y ${normalQueue.length} Normales.`);
+            console.log(`📒 [LOAD-3] MEMORIA RECUPERADA: ${pdfQueue.length} PDFs y ${normalQueue.length} Normales.`);
+        } else {
+            console.log('ℹ️ [LOAD-2] No hay cola guardada anterior');
         }
     } catch (e) {
-        console.error("❌ Error cargando cuaderno:", e);
+        console.error("❌ [LOAD-ERROR] Error cargando cuaderno:", e);
     }
 }
 
@@ -112,6 +157,7 @@ const authMiddleware = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if (!MI_TOKEN_SECRETO || token !== MI_TOKEN_SECRETO) {
+        console.log(`⛔ [AUTH] Acceso denegado desde ${req.ip}`);
         return res.status(403).json({ error: 'Acceso denegado' });
     }
     next();
@@ -147,25 +193,34 @@ function getFolderInfo(sessionName) {
 }
 
 function existeSesion(sessionName) { 
-    return fs.existsSync(`./data/session-client-${sessionName}`); 
+    const exists = fs.existsSync(`./data/session-client-${sessionName}`);
+    console.log(`🔍 [SESSION-CHECK] Sesión ${sessionName} existe: ${exists}`);
+    return exists;
 }
 
 function borrarSesion(sessionName) {
     const folderPath = `./data/session-client-${sessionName}`;
     try { 
+        console.log(`🗑️ [DELETE-1] Intentando borrar: ${folderPath}`);
         if (fs.existsSync(folderPath)) {
             fs.rmSync(folderPath, { recursive: true, force: true });
-            console.log(`🗑️ Carpeta ${sessionName} eliminada.`);
+            console.log(`✅ [DELETE-2] Carpeta ${sessionName} eliminada.`);
         }
     } catch (e) { 
-        console.error(`Error borrando ${sessionName}:`, e); 
+        console.error(`❌ [DELETE-ERROR] Error borrando ${sessionName}:`, e); 
     }
 }
 
 function recursiveDeleteLocks(dirPath) {
-    if (!fs.existsSync(dirPath)) return;
+    if (!fs.existsSync(dirPath)) {
+        console.log(`ℹ️ [LOCK-1] Directorio no existe: ${dirPath}`);
+        return;
+    }
     try {
+        console.log(`🧹 [LOCK-2] Limpiando locks en: ${dirPath}`);
         const files = fs.readdirSync(dirPath);
+        let locksEliminados = 0;
+        
         for (const file of files) {
             const currentPath = path.join(dirPath, file);
             if (fs.lstatSync(currentPath).isDirectory()) {
@@ -173,44 +228,61 @@ function recursiveDeleteLocks(dirPath) {
             } else {
                 if (file.includes('Singleton') || file.includes('lockfile')) {
                     fs.unlinkSync(currentPath);
-                    console.log(`🔓 Lock eliminado: ${file}`);
+                    console.log(`🔓 [LOCK-3] Lock eliminado: ${file}`);
+                    locksEliminados++;
                 }
             }
         }
+        console.log(`✅ [LOCK-4] Limpieza completada: ${locksEliminados} locks eliminados`);
     } catch (e) {
-        console.error("⚠️ Error limpiando locks:", e.message);
+        console.error("❌ [LOCK-ERROR] Error limpiando locks:", e.message);
     }
 }
 
 // --- FUNCIÓN MAESTRA: INICIAR SESIÓN --- 
 async function startSession(sessionName, isManual = false) {
+    console.log(`\n🔵 [SESSION-START-1] ========== INICIANDO SESIÓN: ${sessionName.toUpperCase()} ==========`);
+    console.log(`🔵 [SESSION-START-2] Modo: ${isManual ? 'MANUAL' : 'AUTO'}`);
+    console.log(`🔵 [SESSION-START-3] Timestamp: ${new Date().toISOString()}`);
+    
     let abortandoPorFaltaDeQR = false; 
 
     if (client) { 
-        try { await client.destroy(); } catch(e) {} 
+        console.log('⚠️ [SESSION-4] Cliente existente detectado, destruyendo...');
+        try { 
+            await client.destroy(); 
+            console.log('✅ [SESSION-5] Cliente anterior destruido');
+        } catch(e) {
+            console.log('⚠️ [SESSION-6] Error destruyendo cliente:', e.message);
+        } 
         client = null; 
         isClientReady = false; 
     }
     
     try {
-        console.log("🔫 Asegurando que no haya Chromes zombies...");
+        console.log("🔫 [CHROME-KILL-1] Asegurando que no haya Chromes zombies...");
         execSync("pkill -f chrome || true");
-    } catch (e) { }
+        console.log("✅ [CHROME-KILL-2] Proceso de limpieza completado");
+    } catch (e) { 
+        console.log("ℹ️ [CHROME-KILL-3] No hay procesos Chrome para matar");
+    }
 
     isPaused = false; 
     mensajesEnRacha = 0;
     activeSessionName = sessionName;
-    console.log(`🔵 INICIANDO: ${sessionName.toUpperCase()} (Stealth Mode)`);
+    console.log(`✅ [SESSION-7] Variables de estado reseteadas`);
+    
     io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
 
     try {
         const folderPath = path.resolve(`./data/session-client-${sessionName}`);
-        console.log(`🧹 Limpiando locks en: ${folderPath}`);
+        console.log(`🧹 [SESSION-8] Limpiando locks en: ${folderPath}`);
         recursiveDeleteLocks(folderPath);
     } catch (errLock) {
-        console.error("Error en limpieza de locks:", errLock);
+        console.error("❌ [SESSION-ERROR-1] Error en limpieza de locks:", errLock);
     }
 
+    console.log('⚙️ [PUPPETEER-1] Configurando Puppeteer...');
     const puppeteerConfig = {
         headless: true,
         protocolTimeout: 300000,
@@ -231,8 +303,15 @@ async function startSession(sessionName, isManual = false) {
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
     };
-    if (RUTA_CHROME_DETECTADA) puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
+    
+    if (RUTA_CHROME_DETECTADA) {
+        puppeteerConfig.executablePath = RUTA_CHROME_DETECTADA;
+        console.log(`✅ [PUPPETEER-2] Usando Chrome detectado: ${RUTA_CHROME_DETECTADA}`);
+    } else {
+        console.log(`ℹ️ [PUPPETEER-2] Usando Chrome default de Puppeteer`);
+    }
 
+    console.log('📱 [WHATSAPP-1] Creando cliente WhatsApp...');
     client = new Client({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         authStrategy: new LocalAuth({ 
@@ -242,66 +321,117 @@ async function startSession(sessionName, isManual = false) {
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath,
-
-        // 👇👇👇 AGREGA ESTO AQUÍ 👇👇👇
         webVersionCache: {
             type: 'remote',
             remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/refs/heads/main/html/2.3000.1031490220-alpha.html',
         }
-        // 👆👆👆 FIN DEL AGREGADO 👆👆👆
     });
+    console.log('✅ [WHATSAPP-2] Cliente WhatsApp creado');
 
+    console.log('🎧 [EVENTS-1] Registrando event handlers...');
+    
     client.on('qr', async (qr) => { 
+        console.log(`📸 [QR-1] QR recibido para ${sessionName}`);
+        
         if (!isManual) {
-            console.log(`⛔ ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
+            console.log(`⛔ [QR-2] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
             io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
             abortandoPorFaltaDeQR = true; 
-            try { await client.destroy(); } catch(e) {}
+            try { 
+                await client.destroy(); 
+                console.log('✅ [QR-3] Cliente destruido por falta de QR');
+            } catch(e) {
+                console.log('⚠️ [QR-4] Error destruyendo:', e.message);
+            }
             client = null;
             isClientReady = false;
             return;
         }
+        
+        console.log('📤 [QR-5] Emitiendo QR al cliente web');
         io.emit('qr', qr); 
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
 
     client.on('ready', () => { 
         isClientReady = true; 
-        console.log(`✅ ${sessionName} CONECTADO Y LISTO`);
+        console.log(`✅✅✅ [READY-1] ${sessionName} CONECTADO Y LISTO ✅✅✅`);
+        console.log(`📱 [READY-2] Nombre: ${client.info.pushname}`);
+        console.log(`📱 [READY-3] Número: ${client.info.wid.user}`);
+        
         io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`); 
         io.emit('connected', { 
             name: client.info.pushname, 
             number: client.info.wid.user, 
             session: sessionName 
         }); 
+        
+        console.log('🚀 [READY-4] Iniciando procesamiento de cola...');
         processQueue(); 
     });
 
     client.on('auth_failure', async () => {
+        console.error('❌ [AUTH-FAILURE-1] CREDENCIALES INVÁLIDAS');
         io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
-        try { await client.destroy(); } catch(e) {}
+        try { 
+            await client.destroy(); 
+            console.log('✅ [AUTH-FAILURE-2] Cliente destruido');
+        } catch(e) {
+            console.log('⚠️ [AUTH-FAILURE-3] Error destruyendo:', e.message);
+        }
         client = null;
-        if (!isManual) borrarSesion(sessionName);
+        if (!isManual) {
+            console.log('🗑️ [AUTH-FAILURE-4] Borrando sesión por auth failure');
+            borrarSesion(sessionName);
+        }
     });
 
     client.on('disconnected', (reason) => { 
-        isClientReady = false; 
+        isClientReady = false;
+        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`); 
         io.emit('status', '❌ Desconectado'); 
-        if (reason === 'LOGOUT') borrarSesion(sessionName);
+        if (reason === 'LOGOUT') {
+            console.log('🗑️ [DISCONNECTED-2] Borrando sesión por LOGOUT');
+            borrarSesion(sessionName);
+        }
     });
+    
+    client.on('loading_screen', (percent, message) => {
+        console.log(`⏳ [LOADING] ${percent}% - ${message}`);
+    });
+    
+    client.on('authenticated', () => {
+        console.log('✅ [AUTHENTICATED] Autenticación exitosa');
+    });
+    
+    console.log('✅ [EVENTS-2] Event handlers registrados');
 
     try { 
+        console.log('🚀 [INITIALIZE-1] Llamando client.initialize()...');
         await client.initialize(); 
+        console.log('✅ [INITIALIZE-2] client.initialize() completado');
     } catch (e) { 
-        if (abortandoPorFaltaDeQR) return;
-        if(e.message.includes('Target closed')) setTimeout(() => process.exit(1), 5000); 
+        console.error('❌ [INITIALIZE-ERROR] Error en initialize:', e.message);
+        console.error('📜 [INITIALIZE-ERROR] Stack:', e.stack);
+        
+        if (abortandoPorFaltaDeQR) {
+            console.log('ℹ️ [INITIALIZE-3] Abortado por falta de QR - no reiniciar');
+            return;
+        }
+        
+        if(e.message.includes('Target closed')) {
+            console.log('⚠️ [INITIALIZE-4] Target closed - reiniciando en 5 segundos...');
+            setTimeout(() => process.exit(1), 5000); 
+        }
     }
+    
+    console.log(`🏁 [SESSION-END] Función startSession completada para ${sessionName}\n`);
 }
 
 // --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
     try {
-        console.log(`📄 Generando PDF para ${item.numero}...`);
+        console.log(`📄 [PDF-1] Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
         
         const htmlContent = `
@@ -357,45 +487,48 @@ async function generarYEnviarPDF(item, clientInstance) {
         </body>
         </html>`;
 
+        console.log('🌐 [PDF-2] Lanzando navegador para PDF...');
         const browser = await puppeteer.launch({ 
-            headless: 'new', // Modo ligero moderno
+            headless: 'new',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Vital para Render: evita usar memoria compartida limitada
-                '--disable-accelerated-2d-canvas', // Apaga gráficos innecesarios
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
                 '--no-first-run',
-                '--single-process', // Intenta no abrir múltiples sub-procesos
-                '--disable-gpu', // No hay monitor, no necesitamos GPU
-                '--js-flags="--max-old-space-size=512"' // Limita la RAM interna a 512MB
+                '--single-process',
+                '--disable-gpu',
+                '--js-flags="--max-old-space-size=512"'
             ],
             executablePath: RUTA_CHROME_DETECTADA || undefined 
         });
+        console.log('✅ [PDF-3] Navegador lanzado');
+        
         const page = await browser.newPage();
+        console.log('✅ [PDF-4] Página creada');
 
-        // 1. Cargamos el HTML rápido (sin esperar red estricta todavía)
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
+        console.log('✅ [PDF-5] HTML cargado');
 
-        // 2. Si hay foto, forzamos al navegador a esperar que se renderice
         if (foto_evidencia) {
+            console.log('📸 [PDF-6] Esperando carga de imagen...');
             try {
-                // "Esperar hasta que la imagen exista Y esté completa"
-                // Timeout de 10 segundos (10000 ms). Si falla, salta al catch.
                 await page.waitForFunction(() => {
                     const img = document.querySelector('.evidencia img');
-                    // Verificamos que exista, que 'complete' sea true y tenga tamaño real
                     return img && img.complete && img.naturalHeight > 0;
                 }, { timeout: 10000 }); 
+                console.log('✅ [PDF-7] Imagen cargada');
             } catch (e) {
-                // Si entra aquí, es que pasaron 10s y la imagen no cargó.
-                // NO HACEMOS NADA. Seguimos adelante para generar el PDF como esté.
-                console.log("⚠️ Tiempo de espera de imagen agotado. Generando PDF igual...");
+                console.log("⚠️ [PDF-8] Timeout imagen - continuando sin ella");
             }
         }
 
-        // 3. Generamos el PDF (Salga la foto o no)
+        console.log('📄 [PDF-9] Generando PDF...');
         const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true });
+        console.log('✅ [PDF-10] PDF generado');
+        
         await browser.close();
+        console.log('✅ [PDF-11] Navegador cerrado');
 
         const b64 = Buffer.from(pdfBuffer).toString('base64');
         const media = new MessageMedia('application/pdf', b64, `Ticket-${datos_ticket.folio}.pdf`);
@@ -403,29 +536,41 @@ async function generarYEnviarPDF(item, clientInstance) {
         let chatId = item.numero.replace(/\D/g, '');
         if (chatId.length === 10) chatId = '52' + chatId;
         
+        console.log(`📤 [PDF-12] Enviando PDF a ${chatId}...`);
         await clientInstance.sendMessage(chatId + '@c.us', media, { 
             caption: item.mensaje || "Su pedido ha sido entregado. Adjunto ticket y evidencia. 📄🏠" 
         });
-        console.log(`✅ PDF enviado exitosamente a ${item.numero}`);
+        console.log(`✅ [PDF-13] PDF enviado exitosamente a ${item.numero}`);
         return true;
     } catch (e) {
-        console.error("❌ Error PDF:", e.message);
+        console.error("❌ [PDF-ERROR] Error PDF:", e.message);
+        console.error("📜 [PDF-ERROR] Stack:", e.stack);
         return false;
     }
 }
 
 // --- PROCESADOR DE COLA (LÓGICA MEJORADA 3:2) --- 
 const processQueue = async () => {
-    if (isProcessingQueue || (pdfQueue.length === 0 && normalQueue.length === 0)) return;
-    if (isPaused || !isClientReady || !client) return; 
+    console.log(`\n🔄 [QUEUE-1] processQueue() llamado - Processing: ${isProcessingQueue}, PDFs: ${pdfQueue.length}, Normales: ${normalQueue.length}`);
+    
+    if (isProcessingQueue || (pdfQueue.length === 0 && normalQueue.length === 0)) {
+        console.log(`ℹ️ [QUEUE-2] Saliendo - isProcessing: ${isProcessingQueue}, colas vacías: ${pdfQueue.length === 0 && normalQueue.length === 0}`);
+        return;
+    }
+    
+    if (isPaused || !isClientReady || !client) {
+        console.log(`⏸️ [QUEUE-3] Pausado o no listo - isPaused: ${isPaused}, isReady: ${isClientReady}, hasClient: ${!!client}`);
+        return; 
+    }
 
     if (mensajesEnRacha >= limiteRachaActual) {
         isPaused = true; 
         const minutosPausa = getRandomDelay(8, 15); 
-        console.log(`☕ PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
+        console.log(`☕ [PAUSE-1] PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
         io.emit('status', `☕ Descanso (${minutosPausa} min)`);
         
         setTimeout(() => { 
+            console.log('✅ [PAUSE-2] Fin de pausa, reanudando...');
             isPaused = false; 
             mensajesEnRacha = 0; 
             limiteRachaActual = getRandomDelay(5, 9);
@@ -435,6 +580,7 @@ const processQueue = async () => {
     }
     
     isProcessingQueue = true;
+    console.log('✅ [QUEUE-4] Iniciando procesamiento');
 
     // --- DECISOR DE RATIO 3:2 ---
     let item = null;
@@ -443,59 +589,77 @@ const processQueue = async () => {
     if (pdfQueue.length > 0 && pdfEnCiclo < 3) {
         item = pdfQueue[0];
         tipoSeleccionado = 'pdf';
+        console.log(`📄 [QUEUE-5] Seleccionado PDF (ciclo: ${pdfEnCiclo}/3)`);
     } 
     else if (normalQueue.length > 0 && normalEnCiclo < 2) {
         item = normalQueue[0];
         tipoSeleccionado = 'normal';
+        console.log(`💬 [QUEUE-5] Seleccionado Normal (ciclo: ${normalEnCiclo}/2)`);
     }
     else {
         if (pdfQueue.length > 0) {
             item = pdfQueue[0];
             tipoSeleccionado = 'pdf';
             if (normalQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; }
+            console.log('📄 [QUEUE-5] Seleccionado PDF (reset ciclo)');
         } else if (normalQueue.length > 0) {
             item = normalQueue[0];
             tipoSeleccionado = 'normal';
             if (pdfQueue.length === 0) { pdfEnCiclo = 0; normalEnCiclo = 0; }
+            console.log('💬 [QUEUE-5] Seleccionado Normal (reset ciclo)');
         }
     }
 
-   if (!item) { isProcessingQueue = false; return; }
+   if (!item) { 
+       console.log('⚠️ [QUEUE-6] No hay items para procesar');
+       isProcessingQueue = false; 
+       return; 
+   }
 
-    // ▼▼▼ NUEVO CÓDIGO: SI TIENE BASURA (COMO /), LO BORRA Y SIGUE ▼▼▼
+    console.log(`📋 [QUEUE-7] Item seleccionado: ${item.numero} (${tipoSeleccionado})`);
+
+    // Validación de formato
     if (/[^\d\s\+\-\(\)]/.test(item.numero)) {
-        console.log(`🗑️ ELIMINADO POR FORMATO MALO: ${item.numero}`);
+        console.log(`🗑️ [QUEUE-8] ELIMINADO POR FORMATO MALO: ${item.numero}`);
         
-        // Lo saca de la cola
         if (tipoSeleccionado === 'pdf') pdfQueue.shift();
         else normalQueue.shift();
 
         saveQueue();
         isProcessingQueue = false;
-        processQueue(); // Pasa al siguiente inmediatamente
+        processQueue();
         return;
     }
-    // ▲▲▲ FIN NUEVO CÓDIGO ▲▲▲
 
     try {
         let cleanNumber = item.numero.replace(/\D/g, '');
         if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
         const finalNumber = cleanNumber + '@c.us';
         
-        console.log(`⏳ Procesando ${item.numero} (${tipoSeleccionado})...`);
-        // Simula "escribiendo..." (4-8 segundos)
-        await new Promise(r => setTimeout(r, getRandomDelay(4000, 8000)));
+        console.log(`⏳ [SEND-1] Procesando ${item.numero} -> ${finalNumber} (${tipoSeleccionado})...`);
         
+        // Simula "escribiendo..."
+        const typingDelay = getRandomDelay(4000, 8000);
+        console.log(`⌨️ [SEND-2] Simulando escritura por ${typingDelay}ms...`);
+        await new Promise(r => setTimeout(r, typingDelay));
+        
+        console.log(`🔍 [SEND-3] Verificando si ${finalNumber} está registrado...`);
         const isRegistered = await client.isRegisteredUser(finalNumber);
+        console.log(`✅ [SEND-4] Registro verificado: ${isRegistered}`);
+        
         if (isRegistered) {
             if (tipoSeleccionado === 'pdf') {
+                console.log('📄 [SEND-5] Generando y enviando PDF...');
                 await generarYEnviarPDF(item, client);
                 pdfEnCiclo++;
             } else {
                 if (item.mediaUrl) {
+                    console.log(`🖼️ [SEND-5] Descargando media desde: ${item.mediaUrl}`);
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
+                    console.log('📤 [SEND-6] Enviando mensaje con media...');
                     await client.sendMessage(finalNumber, media, { caption: item.mensaje });
                 } else {
+                    console.log('📤 [SEND-5] Enviando mensaje de texto...');
                     await client.sendMessage(finalNumber, item.mensaje);
                 }
                 normalEnCiclo++;
@@ -503,23 +667,35 @@ const processQueue = async () => {
             mensajesEnRacha++; 
             
             if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
+                console.log('🔄 [SEND-7] Reseteando contadores de ciclo');
                 pdfEnCiclo = 0;
                 normalEnCiclo = 0;
             }
 
-            console.log(`✅ Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+            console.log(`✅ [SEND-8] Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+        } else {
+            console.log(`⚠️ [SEND-9] Número no registrado: ${finalNumber}`);
         }
     } catch (error) {
-        console.error('❌ Error envío:', error.message);
-        if (error.message.includes('Session closed')) process.exit(1); 
+        console.error('❌ [SEND-ERROR] Error envío:', error.message);
+        console.error('📜 [SEND-ERROR] Stack:', error.stack);
+        
+        if (error.message.includes('Session closed')) {
+            console.log('🔴 [SEND-ERROR] Sesión cerrada - terminando proceso');
+            process.exit(1); 
+        }
     } finally {
+        console.log(`🧹 [CLEANUP-1] Removiendo item de cola (tipo: ${tipoSeleccionado})`);
         if (tipoSeleccionado === 'pdf') pdfQueue.shift(); 
         else normalQueue.shift();
 
         saveQueue(); 
+        
         const shortPause = getRandomDelay(45000, 90000); 
-        console.log(`⏱️ Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
+        console.log(`⏱️ [CLEANUP-2] Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
+        
         setTimeout(() => { 
+            console.log('✅ [CLEANUP-3] Timeout completado, liberando procesamiento');
             isProcessingQueue = false; 
             processQueue(); 
         }, shortPause);
@@ -527,18 +703,26 @@ const processQueue = async () => {
 };
 
 // --- RUTAS API --- 
+console.log('🛣️ [ROUTES-1] Configurando rutas...');
+
 app.post('/iniciar-chip-a', authMiddleware, (req, res) => { 
+    console.log('🔵 [ROUTE] POST /iniciar-chip-a');
     startSession('chip-a', true); 
     res.json({ success: true, message: 'Iniciando chip-a manual' }); 
 });
 
 app.post('/iniciar-chip-b', authMiddleware, (req, res) => { 
+    console.log('🟢 [ROUTE] POST /iniciar-chip-b');
     startSession('chip-b', true); 
     res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
+    console.log('📨 [ROUTE] POST /enviar');
+    if (!checkOfficeHours().isOpen) {
+        console.log('⏰ [ROUTE] Fuera de horario');
+        return res.status(400).json({ error: 'Fuera de horario laboral' });
+    }
     normalQueue.push({ type: 'normal', ...req.body, resolve: () => {} });
     saveQueue(); 
     processQueue();
@@ -546,7 +730,11 @@ app.post('/enviar', authMiddleware, (req, res) => {
 });
 
 app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
-    if (!checkOfficeHours().isOpen) return res.status(400).json({ error: 'Fuera de horario laboral' });
+    console.log('📄 [ROUTE] POST /enviar-ticket-pdf');
+    if (!checkOfficeHours().isOpen) {
+        console.log('⏰ [ROUTE] Fuera de horario');
+        return res.status(400).json({ error: 'Fuera de horario laboral' });
+    }
     pdfQueue.push({ 
         type: 'pdf', 
         ...req.body, 
@@ -559,6 +747,7 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
 });
 
 app.get('/cola-pendientes', authMiddleware, (req, res) => {
+    console.log('📋 [ROUTE] GET /cola-pendientes');
     const vistaPdf = pdfQueue.map((item, i) => ({ 
         index: i, 
         tipo: 'pdf', 
@@ -575,6 +764,7 @@ app.get('/cola-pendientes', authMiddleware, (req, res) => {
 });
 
 app.post('/borrar-item-cola', authMiddleware, (req, res) => {
+    console.log('🗑️ [ROUTE] POST /borrar-item-cola');
     const { index } = req.body;
     if (index < pdfQueue.length) {
         pdfQueue.splice(index, 1);
@@ -586,17 +776,23 @@ app.post('/borrar-item-cola', authMiddleware, (req, res) => {
 });
 
 app.post('/limpiar-cola', authMiddleware, (req, res) => { 
-    pdfQueue = []; normalQueue = []; pdfEnCiclo = 0; normalEnCiclo = 0;
+    console.log('🧹 [ROUTE] POST /limpiar-cola');
+    pdfQueue = []; 
+    normalQueue = []; 
+    pdfEnCiclo = 0; 
+    normalEnCiclo = 0;
     saveQueue(); 
     res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
 app.post('/detener-bot', authMiddleware, async (req, res) => { 
+    console.log('🛑 [ROUTE] POST /detener-bot');
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
 });
 
 app.get('/status', (req, res) => {
+    console.log('📊 [ROUTE] GET /status');
     res.json({ 
         ready: isClientReady, 
         cola_total: pdfQueue.length + normalQueue.length, 
@@ -609,25 +805,77 @@ app.get('/status', (req, res) => {
     });
 });
 
-app.get('/', (req, res) => res.render('index'));
-
-io.on('connection', (socket) => {
-    if(activeSessionName) {
-        socket.emit('status', isClientReady 
-            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
-            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`
-        );
-    }
+app.get('/', (req, res) => {
+    console.log('🏠 [ROUTE] GET /');
+    res.render('index');
 });
 
-server.listen(PORT, () => {
-    console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
-    loadQueue(); 
-    const turno = getTurnoActual();
-    if (existeSesion(turno)) startSession(turno, false);
+// Health check para Render
+app.get('/health', (req, res) => {
+    console.log('💚 [ROUTE] GET /health - Health check');
+    res.status(200).json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        ready: isClientReady,
+        session: activeSessionName 
+    });
+});
+
+console.log('✅ [ROUTES-2] Rutas configuradas');
+
+console.log('🔌 [SOCKET-3] Configurando Socket.IO connection handler...');
+io.on('connection', (socket) => {
+    console.log('🔗 [SOCKET-CONNECTION] Nuevo cliente conectado:', socket.id);
     
+    if(activeSessionName) {
+        const statusMsg = isClientReady 
+            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
+            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
+        console.log(`📤 [SOCKET-EMIT] Enviando status: ${statusMsg}`);
+        socket.emit('status', statusMsg);
+    }
+    
+    socket.on('disconnect', () => {
+        console.log('👋 [SOCKET-DISCONNECT] Cliente desconectado:', socket.id);
+    });
+});
+console.log('✅ [SOCKET-4] Socket.IO configurado completamente');
+
+console.log('\n🚀 [SERVER-START-1] Iniciando servidor HTTP...');
+console.log(`🌐 [SERVER-START-2] Puerto configurado: ${PORT}`);
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🎉🎉🎉 [SERVER-READY] ========================================`);
+    console.log(`🛡️ [SERVER-READY] SERVIDOR LISTO EN PUERTO ${PORT}`);
+    console.log(`🌐 [SERVER-READY] Escuchando en 0.0.0.0:${PORT}`);
+    console.log(`⏰ [SERVER-READY] Timestamp: ${new Date().toISOString()}`);
+    console.log(`🎉🎉🎉 [SERVER-READY] ========================================\n`);
+    
+    console.log('💾 [INIT-1] Cargando cola guardada...');
+    loadQueue(); 
+    
+    const turno = getTurnoActual();
+    console.log(`🎯 [INIT-2] Turno actual calculado: ${turno}`);
+    
+    if (existeSesion(turno)) {
+        console.log(`✅ [INIT-3] Sesión existe, iniciando automáticamente: ${turno}`);
+        startSession(turno, false);
+    } else {
+        console.log(`ℹ️ [INIT-3] No hay sesión guardada para ${turno}`);
+    }
+    
+    console.log('⏰ [INIT-4] Configurando verificador de turnos (cada 60s)...');
     setInterval(() => {
         const turnoDebido = getTurnoActual();
-        if (activeSessionName && activeSessionName !== turnoDebido) process.exit(0); 
+        console.log(`🔍 [TURNO-CHECK] Verificando turno - Actual: ${activeSessionName}, Debido: ${turnoDebido}`);
+        
+        if (activeSessionName && activeSessionName !== turnoDebido) {
+            console.log(`🔄 [TURNO-CHANGE] Cambio de turno detectado - reiniciando proceso`);
+            process.exit(0); 
+        }
     }, 60000); 
+    
+    console.log('✅ [INIT-5] Inicialización completa\n');
 });
+
+console.log('✅ [FINAL] Script cargado completamente - esperando server.listen()...');
