@@ -622,7 +622,7 @@ io.on('connection', (socket) => {
 
 server.listen(PORT, () => {
     console.log(`🛡️ SERVIDOR LISTO EN PUERTO ${PORT}`);
-    // loadQueue(); 
+    loadQueue(); 
     const turno = getTurnoActual();
     if (existeSesion(turno)) startSession(turno, false);
     
