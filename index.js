@@ -9,7 +9,7 @@ const puppeteer = require('puppeteer');
 const { execSync } = require('child_process');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16 — QR con countdown + rutas borrado + QR en memoria');
+console.log('📦 [VERSION] build 2026-04-16c — fix user-agent mismatch Chrome 147 vs 122');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -291,19 +291,17 @@ async function startSession(sessionName, isManual = false) {
         protocolTimeout: 300000,
         ignoreDefaultArgs: ['--enable-automation'], 
         args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas', 
-            '--no-first-run', 
-            '--single-process', 
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
             '--disable-gpu',
-            '--js-flags="--max-old-space-size=1024"',
-            '--disable-blink-features=AutomationControlled', 
+            '--js-flags=--max-old-space-size=1024',
+            '--disable-blink-features=AutomationControlled',
             '--disable-infobars',
-            '--window-size=1920,1080',
-            `--user-data-dir=./data/session-client-${sessionName}`,
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            '--window-size=1280,720',
+            `--user-data-dir=./data/session-client-${sessionName}`
         ]
     };
     
@@ -316,15 +314,13 @@ async function startSession(sessionName, isManual = false) {
 
     console.log('📱 [WHATSAPP-1] Creando cliente WhatsApp...');
     client = new Client({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        authStrategy: new LocalAuth({ 
-            clientId: `client-${sessionName}`, 
-            dataPath: './data' 
+        authStrategy: new LocalAuth({
+            clientId: `client-${sessionName}`,
+            dataPath: './data'
         }),
         puppeteer: puppeteerConfig,
-        qrMaxRetries: isManual ? 5 : 0, 
+        qrMaxRetries: isManual ? 5 : 0,
         ffmpegPath: ffmpegPath,
-        
     });
     console.log('✅ [WHATSAPP-2] Cliente WhatsApp creado');
 
@@ -494,7 +490,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         </html>`;
 
         console.log('🌐 [PDF-2] Lanzando navegador para PDF...');
-        const browser = await puppeteer.launch({ 
+        const browser = await puppeteer.launch({
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -502,9 +498,8 @@ async function generarYEnviarPDF(item, clientInstance) {
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
-                '--single-process',
                 '--disable-gpu',
-                '--js-flags="--max-old-space-size=512"'
+                '--js-flags=--max-old-space-size=512'
             ],
             executablePath: RUTA_CHROME_DETECTADA || undefined 
         });
