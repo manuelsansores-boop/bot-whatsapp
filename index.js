@@ -4,12 +4,13 @@ const http = require('http');
 const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
-const moment = require('moment-timezone'); 
-const puppeteer = require('puppeteer'); 
+const moment = require('moment-timezone');
+const puppeteer = require('puppeteer');
 const { execSync } = require('child_process');
+const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16c — fix user-agent mismatch Chrome 147 vs 122');
+console.log('📦 [VERSION] build 2026-04-16e — botón Generar QR bajo demanda');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -344,10 +345,16 @@ async function startSession(sessionName, isManual = false) {
             return;
         }
         
-        console.log('📤 [QR-5] Emitiendo QR al cliente web');
-        lastQR = qr;
-        lastQRSession = sessionName;
-        io.emit('qr', qr);
+        console.log('📤 [QR-5] Convirtiendo QR a imagen y emitiendo...');
+        try {
+            const qrDataURL = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
+            lastQR = qrDataURL;
+            lastQRSession = sessionName;
+            io.emit('qr', qrDataURL);
+            console.log('✅ [QR-6] QR imagen enviado al panel');
+        } catch (qrErr) {
+            console.error('❌ [QR-ERROR] Error generando imagen QR:', qrErr.message);
+        }
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`);
     });
 
@@ -784,6 +791,14 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     normalEnCiclo = 0;
     saveQueue(); 
     res.json({ success: true, message: 'Colas vaciadas' }); 
+});
+
+app.get('/generar-qr', authMiddleware, (req, res) => {
+    console.log('📸 [ROUTE] GET /generar-qr');
+    if (lastQR && !isClientReady) {
+        return res.json({ success: true, qr: lastQR });
+    }
+    res.json({ success: false, message: 'No hay QR disponible. Primero haz clic en Forzar/Escanear.' });
 });
 
 app.post('/borrar-chip-a', authMiddleware, (req, res) => {

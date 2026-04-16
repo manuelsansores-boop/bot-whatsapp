@@ -50,7 +50,7 @@
     <div class="card">
         <h1>🏓 Bot Ping-Pong v7</h1>
         <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2</p>
-        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16c — fix user-agent Chrome 147</p>
+        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16e — botón Generar QR</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         <div id="ciclo-info"></div>
@@ -87,7 +87,17 @@
             <div id="lista-cola"></div>
         </div>
 
-        <div id="qr-area" style="margin-top: 20px;"></div>
+        <div id="qr-area" style="margin-top: 20px;">
+            <div id="qr-placeholder" style="display:none; padding:20px; background:#fff3cd; border-radius:10px; color:#664d03;">
+                <p style="font-weight:bold; margin:0 0 10px;">📱 Sesión lista para escanear</p>
+                <button class="btn btn-green" style="width:auto;" onclick="pedirQR()">📸 Generar QR</button>
+            </div>
+            <div id="qr-imagen" style="display:none;">
+                <img id="qr-img" style="width:256px; height:256px; display:block; margin:0 auto; border-radius:10px; border:3px solid #198754;" />
+                <p style="font-weight:bold; color:#198754; margin-top:8px;">📸 ESCANEA AHORA</p>
+                <button class="btn btn-orange" style="width:auto; margin-top:5px;" onclick="pedirQR()">🔄 Generar otro QR</button>
+            </div>
+        </div>
         <div class="log" id="logs"><div>> Panel listo...</div></div>
     </div>
 
@@ -201,43 +211,34 @@
             addLog(msg);
         }
 
-        let countdownInterval = null;
-
-        function startQRCountdown(code) {
-            if (countdownInterval) clearInterval(countdownInterval);
-            let segundos = 20;
-
-            function render() {
-                const color = segundos <= 5 ? '#dc3545' : segundos <= 10 ? '#fd7e14' : '#198754';
-                const aviso = segundos <= 5 ? '⚠️ ¡EXPIRANDO!' : segundos <= 10 ? '⚡ Rápido...' : '📸 ESCANEA AHORA';
-                qrArea.innerHTML = `
-                    <div style="background:white; padding:10px; border-radius:10px; display:inline-block; border: 3px solid ${color};">
-                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" />
-                        <p style="font-weight:bold; margin-top:5px; color:${color};">${aviso}</p>
-                        <p style="font-size:2em; font-weight:bold; color:${color}; margin:0;">${segundos}s</p>
-                    </div>`;
-            }
-
-            render();
-            countdownInterval = setInterval(() => {
-                segundos--;
-                if (segundos <= 0) {
-                    clearInterval(countdownInterval);
-                    countdownInterval = null;
-                    qrArea.innerHTML = `<div style="padding:20px; background:#fff3cd; border-radius:10px; color:#664d03; font-weight:bold;">⏰ QR expirado. WhatsApp enviará uno nuevo automáticamente...</div>`;
-                } else {
-                    render();
-                }
-            }, 1000);
-        }
-
-        socket.on('qr', (code) => {
-            addLog('📸 Nuevo QR recibido — escanea en 20 segundos');
-            startQRCountdown(code);
+        socket.on('qr', (dataURL) => {
+            addLog('📸 QR disponible — haz clic en "Generar QR"');
+            document.getElementById('qr-placeholder').style.display = 'block';
+            document.getElementById('qr-imagen').style.display = 'none';
         });
+
+        async function pedirQR() {
+            const token = document.getElementById('token').value;
+            if (!token) return alert('⚠️ Pon el token primero');
+            try {
+                const res = await fetch('/generar-qr', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                if (data.success && data.qr) {
+                    document.getElementById('qr-placeholder').style.display = 'none';
+                    document.getElementById('qr-imagen').style.display = 'block';
+                    document.getElementById('qr-img').src = data.qr;
+                    addLog('📸 QR generado — escanéalo ahora');
+                } else {
+                    addLog('⚠️ ' + (data.message || 'Sin QR disponible'));
+                }
+            } catch(e) { addLog('❌ Error pidiendo QR'); }
+        }
         
         socket.on('connected', (u) => {
-            if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+            document.getElementById('qr-placeholder').style.display = 'none';
+            document.getElementById('qr-imagen').style.display = 'none';
             qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
         });
 
