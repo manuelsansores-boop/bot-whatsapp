@@ -50,7 +50,7 @@
     <div class="card">
         <h1>🏓 Bot Ping-Pong v7</h1>
         <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2</p>
-        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16e — botón Generar QR</p>
+        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16g — QR en canvas local</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         <div id="ciclo-info"></div>
@@ -93,7 +93,7 @@
                 <button class="btn btn-green" style="width:auto;" onclick="pedirQR()">📸 Generar QR</button>
             </div>
             <div id="qr-imagen" style="display:none;">
-                <img id="qr-img" style="width:256px; height:256px; display:block; margin:0 auto; border-radius:10px; border:3px solid #198754;" />
+                <canvas id="qr-canvas" style="border-radius:10px; border:3px solid #198754;"></canvas>
                 <p style="font-weight:bold; color:#198754; margin-top:8px;">📸 ESCANEA AHORA</p>
                 <button class="btn btn-orange" style="width:auto; margin-top:5px;" onclick="pedirQR()">🔄 Generar otro QR</button>
             </div>
@@ -101,6 +101,7 @@
         <div class="log" id="logs"><div>> Panel listo...</div></div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
@@ -211,7 +212,10 @@
             addLog(msg);
         }
 
-        socket.on('qr', (dataURL) => {
+        let qrRawString = null;
+
+        socket.on('qr', (qrString) => {
+            qrRawString = qrString;
             addLog('📸 QR disponible — haz clic en "Generar QR"');
             document.getElementById('qr-placeholder').style.display = 'block';
             document.getElementById('qr-imagen').style.display = 'none';
@@ -220,20 +224,36 @@
         async function pedirQR() {
             const token = document.getElementById('token').value;
             if (!token) return alert('⚠️ Pon el token primero');
+
+            // Si ya tenemos el string del QR en memoria, usarlo directo
+            if (qrRawString) {
+                mostrarQR(qrRawString);
+                return;
+            }
+
+            // Si no, pedirlo al servidor
             try {
-                const res = await fetch('/generar-qr', {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
+                const res = await fetch('/generar-qr', { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await res.json();
                 if (data.success && data.qr) {
-                    document.getElementById('qr-placeholder').style.display = 'none';
-                    document.getElementById('qr-imagen').style.display = 'block';
-                    document.getElementById('qr-img').src = data.qr;
-                    addLog('📸 QR generado — escanéalo ahora');
+                    mostrarQR(data.qr);
                 } else {
-                    addLog('⚠️ ' + (data.message || 'Sin QR disponible'));
+                    addLog('⚠️ ' + (data.message || 'Sin QR — haz clic en Forzar/Escanear primero'));
                 }
             } catch(e) { addLog('❌ Error pidiendo QR'); }
+        }
+
+        function mostrarQR(qrString) {
+            const canvas = document.getElementById('qr-canvas');
+            QRCode.toCanvas(canvas, qrString, { width: 256, margin: 2 }, function(error) {
+                if (error) {
+                    addLog('❌ Error dibujando QR: ' + error.message);
+                    return;
+                }
+                document.getElementById('qr-placeholder').style.display = 'none';
+                document.getElementById('qr-imagen').style.display = 'block';
+                addLog('📸 QR dibujado — escanéalo ahora');
+            });
         }
         
         socket.on('connected', (u) => {

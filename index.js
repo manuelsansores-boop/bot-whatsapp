@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16e — botón Generar QR bajo demanda');
+console.log('📦 [VERSION] build 2026-04-16h — QR impreso en logs de Render');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -345,17 +345,21 @@ async function startSession(sessionName, isManual = false) {
             return;
         }
         
-        console.log('📤 [QR-5] Convirtiendo QR a imagen y emitiendo...');
-        try {
-            const qrDataURL = await QRCode.toDataURL(qr, { width: 256, margin: 2 });
-            lastQR = qrDataURL;
-            lastQRSession = sessionName;
-            io.emit('qr', qrDataURL);
-            console.log('✅ [QR-6] QR imagen enviado al panel');
-        } catch (qrErr) {
-            console.error('❌ [QR-ERROR] Error generando imagen QR:', qrErr.message);
-        }
+        console.log('📤 [QR-5] Guardando QR y emitiendo al panel...');
+        lastQR = qr;
+        lastQRSession = sessionName;
+        io.emit('qr', qr);
         io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`);
+        // Imprimir QR en los logs para escanear desde Render
+        try {
+            const qrTerminal = await QRCode.toString(qr, { type: 'utf8', small: true });
+            console.log('\n▼▼▼ ESCANEA ESTE QR ▼▼▼\n');
+            console.log(qrTerminal);
+            console.log('▲▲▲ ESCANEA ESTE QR ▲▲▲\n');
+        } catch(e) {
+            console.error('❌ Error generando QR para logs:', e.message);
+        }
+        console.log('✅ [QR-6] QR listo');
     });
 
     client.on('ready', () => {
@@ -713,16 +717,22 @@ const processQueue = async () => {
 // --- RUTAS API --- 
 console.log('🛣️ [ROUTES-1] Configurando rutas...');
 
-app.post('/iniciar-chip-a', authMiddleware, (req, res) => { 
-    console.log('🔵 [ROUTE] POST /iniciar-chip-a');
-    startSession('chip-a', true); 
-    res.json({ success: true, message: 'Iniciando chip-a manual' }); 
+app.post('/iniciar-chip-a', authMiddleware, (req, res) => {
+    console.log('🔵 [ROUTE] POST /iniciar-chip-a — borrando sesión previa y arrancando manual');
+    borrarSesion('chip-a');
+    lastQR = null;
+    lastQRSession = null;
+    startSession('chip-a', true);
+    res.json({ success: true, message: 'Chip A: sesión borrada, arrancando...' });
 });
 
-app.post('/iniciar-chip-b', authMiddleware, (req, res) => { 
-    console.log('🟢 [ROUTE] POST /iniciar-chip-b');
-    startSession('chip-b', true); 
-    res.json({ success: true, message: 'Iniciando chip-b manual' }); 
+app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
+    console.log('🟢 [ROUTE] POST /iniciar-chip-b — borrando sesión previa y arrancando manual');
+    borrarSesion('chip-b');
+    lastQR = null;
+    lastQRSession = null;
+    startSession('chip-b', true);
+    res.json({ success: true, message: 'Chip B: sesión borrada, arrancando...' });
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
