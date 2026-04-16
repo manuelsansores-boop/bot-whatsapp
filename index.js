@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16h — QR impreso en logs de Render');
+console.log('📦 [VERSION] build 2026-04-16j — QR solo en panel, sin logs');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -345,21 +345,11 @@ async function startSession(sessionName, isManual = false) {
             return;
         }
         
-        console.log('📤 [QR-5] Guardando QR y emitiendo al panel...');
+        // Guardar silenciosamente — solo se muestra cuando el usuario pide
         lastQR = qr;
         lastQRSession = sessionName;
-        io.emit('qr', qr);
-        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`);
-        // Imprimir QR en los logs para escanear desde Render
-        try {
-            const qrTerminal = await QRCode.toString(qr, { type: 'utf8', small: true });
-            console.log('\n▼▼▼ ESCANEA ESTE QR ▼▼▼\n');
-            console.log(qrTerminal);
-            console.log('▲▲▲ ESCANEA ESTE QR ▲▲▲\n');
-        } catch(e) {
-            console.error('❌ Error generando QR para logs:', e.message);
-        }
-        console.log('✅ [QR-6] QR listo');
+        io.emit('status', `📸 QR listo (${sessionName.toUpperCase()}) — haz clic en GENERAR QR`);
+        console.log(`📸 [QR-5] QR guardado para ${sessionName} — esperando que el usuario lo pida`);
     });
 
     client.on('ready', () => {
@@ -803,12 +793,13 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
-app.get('/generar-qr', authMiddleware, (req, res) => {
-    console.log('📸 [ROUTE] GET /generar-qr');
-    if (lastQR && !isClientReady) {
-        return res.json({ success: true, qr: lastQR });
+app.get('/generar-qr', authMiddleware, async (req, res) => {
+    console.log('📸 [ROUTE] GET /generar-qr — usuario pidió el QR');
+    if (!lastQR || isClientReady) {
+        return res.json({ success: false, message: 'No hay QR disponible. Haz clic en Forzar/Escanear primero.' });
     }
-    res.json({ success: false, message: 'No hay QR disponible. Primero haz clic en Forzar/Escanear.' });
+    console.log('✅ [QR] Enviando QR al panel');
+    res.json({ success: true, qr: lastQR });
 });
 
 app.post('/borrar-chip-a', authMiddleware, (req, res) => {
