@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16j — QR solo en panel, sin logs');
+console.log('📦 [VERSION] build 2026-04-16k — botón GENERAR QR visible arriba');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
