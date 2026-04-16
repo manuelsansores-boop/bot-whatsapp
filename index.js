@@ -9,6 +9,7 @@ const puppeteer = require('puppeteer');
 const { execSync } = require('child_process');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
+console.log('📦 [VERSION] build 2026-04-16 — QR con countdown + rutas borrado + QR en memoria');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
