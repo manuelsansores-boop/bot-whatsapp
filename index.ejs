@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel Ping-Pong v7 (JSON Safe)</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; padding: 20px; text-align: center; }
+        .card { background: white; max-width: 650px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        
+        .status { padding: 15px; margin: 20px 0; border-radius: 8px; font-weight: bold; font-size: 1.1em; transition: 0.3s; }
+        .ready { background: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; }
+        .wait { background: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
+        .error { background: #f8d7da; color: #842029; border: 1px solid #f5c2c7; }
+        .idle { background: #e2e3e5; color: #41464b; }
+
+        .btn { padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; margin: 5px; color: white; font-weight: bold; width: 90%; }
+        .btn:hover { opacity: 0.9; }
+        .btn-green { background: #198754; width: auto; min-width: 120px; }
+        .btn-stop { background: #212529; width: auto; min-width: 120px; }
+        .btn-orange { background: #fd7e14; }
+        .btn-blue { background: #0dcaf0; color: #000; }
+        .btn-chip-a { background: #0d6efd; }
+        .btn-chip-b { background: #6610f2; }
+        .btn-danger { background: #dc3545; font-size: 11px; margin-top: 5px; opacity: 0.8; }
+        
+        .btn-small-del { background: #dc3545; color: white; padding: 5px 10px; border:none; border-radius:4px; cursor:pointer; margin-left: 10px;}
+
+        .grid-turnos { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
+        .turno-box { border: 1px solid #ddd; padding: 15px; border-radius: 10px; background: #f9f9f9; }
+        .turno-title { font-weight: bold; font-size: 1.2em; display: block; margin-bottom: 5px; }
+        .horarios { font-size: 12px; color: #555; margin-bottom: 10px; background: #eee; padding: 5px; border-radius: 4px;}
+        .box-a { border-top: 5px solid #0d6efd; }
+        .box-b { border-top: 5px solid #6610f2; }
+
+        .log { text-align: left; background: #212529; color: #00ff00; padding: 10px; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 11px; margin-top: 20px; border-radius: 5px; }
+        input { padding: 10px; width: 80%; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 5px; text-align: center; }
+
+        #lista-cola { text-align: left; margin-top: 15px; max-height: 250px; overflow-y: auto; display: none; background: #fff; border: 1px solid #ccc; padding: 10px; border-radius: 5px; }
+        .cola-item { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 8px 0; font-size: 12px; }
+        .cola-tag { font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-right: 8px; }
+        .tag-pdf { background: #ffc107; color: #000; }
+        .tag-normal { background: #e2e3e5; color: #000; }
+        
+        /* Badge para el ciclo 3:2 */
+        .ciclo-badge { font-size: 11px; background: #333; color: #fff; padding: 3px 8px; border-radius: 10px; margin-top: 5px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🏓 Bot Ping-Pong v7</h1>
+        <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2 [cite: 1, 2]</p>
+        
+        <div id="status-box" class="status idle">💤 Esperando sistema...</div>
+        <div id="ciclo-info"></div>
+        
+        <input type="password" id="token" placeholder="Token Secreto">
+        
+        <div>
+            <button class="btn btn-green" onclick="cmd('iniciar-bot')">⚡ REINICIAR</button>
+            <button class="btn btn-stop" onclick="cmd('detener-bot')">⏹ APAGAR TODO</button>
+        </div>
+
+        <div class="grid-turnos">
+            <div class="turno-box box-a">
+                <span class="turno-title">🔵 CHIP A</span>
+                <div class="horarios">8:00-10:00 | 12:00-14:00 | 16:00-18:00</div>
+                <button class="btn btn-chip-a" onclick="cmd('iniciar-chip-a')">▶ Forzar/Escanear A</button>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-a', 'CHIP A')">🗑 BORRAR MEMORIA A</button>
+            </div>
+            <div class="turno-box box-b">
+                <span class="turno-title">🟣 CHIP B</span>
+                <div class="horarios">10:00-12:00 | 14:00-16:00 | 18:00-20:00</div>
+                <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar/Escanear B</button>
+                <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-b', 'CHIP B')">🗑 BORRAR MEMORIA B</button>
+            </div>
+        </div>
+
+        <div style="margin-top: 15px; border-top: 2px dashed #ccc; padding-top: 15px;">
+            <h3>📦 Gestión de Envíos (Doble Cola)</h3>
+            <div style="display: flex; justify-content: center; gap: 5px;">
+                <button class="btn btn-blue" onclick="verCola()" style="width: 45%;">👁️ VER PENDIENTES</button>
+                <button class="btn btn-orange" onclick="cmd('limpiar-cola')" style="width: 45%;">🔥 Borrar TODO</button>
+            </div>
+            
+            <div id="lista-cola"></div>
+        </div>
+
+        <div id="qr-area" style="margin-top: 20px;"></div>
+        <div class="log" id="logs"><div>> Panel listo...</div></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const logs = document.getElementById('logs');
+        const statusBox = document.getElementById('status-box');
+        const qrArea = document.getElementById('qr-area');
+        const listaColaDiv = document.getElementById('lista-cola');
+        const cicloInfoDiv = document.getElementById('ciclo-info');
+
+        function addLog(msg) {
+            const div = document.createElement('div');
+            div.textContent = `[${new Date().toLocaleTimeString()}] > ${msg}`;
+            logs.appendChild(div);
+            logs.scrollTop = logs.scrollHeight;
+        }
+
+        async function cmd(action) {
+            const token = document.getElementById('token').value;
+            if(!token) return alert('⚠️ ¡Falta el TOKEN!');
+            try {
+                const res = await fetch(`/${action}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+                });
+                const data = await res.json();
+                addLog(data.message || data.msg || data.error || 'Acción ejecutada');
+                if(action === 'limpiar-cola') {
+                    listaColaDiv.style.display = 'none';
+                    cicloInfoDiv.innerHTML = '';
+                }
+            } catch(e) { addLog('❌ Error de conexión'); }
+        }
+
+        async function verCola() {
+            const token = document.getElementById('token').value;
+            if(!token) return alert('⚠️ ¡Falta el TOKEN!');
+            
+            try {
+                const res = await fetch('/cola-pendientes', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const cola = await res.json();
+                
+                listaColaDiv.style.display = 'block';
+                listaColaDiv.innerHTML = '';
+                
+                if(cola.length === 0) {
+                    listaColaDiv.innerHTML = '<p style="color:#777; padding:10px;">✅ No hay mensajes pendientes.</p>';
+                    return;
+                }
+
+                cola.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'cola-item';
+                    const tipoClass = item.tipo === 'pdf' ? 'tag-pdf' : 'tag-normal';
+                    div.innerHTML = `
+                        <div style="text-align:left;">
+                            <span class="cola-tag ${tipoClass}">${item.tipo.toUpperCase()}</span>
+                            <b>${item.numero}</b> <br>
+                            <span style="font-size:10px; color:#666;">${item.folio !== 'N/A' ? `Folio: ${item.folio}` : 'Aviso de Salida'}</span>
+                        </div>
+                        <button class="btn-small-del" onclick="borrarItem(${item.index})">X</button>
+                    `;
+                    listaColaDiv.appendChild(div);
+                });
+            } catch(e) {
+                console.error(e);
+                alert('Error obteniendo cola');
+            }
+        }
+
+        async function borrarItem(index) {
+            const token = document.getElementById('token').value;
+            if(!token) return alert('Token requerido');
+            if(!confirm('¿Eliminar este mensaje específico?')) return;
+
+            try {
+                const res = await fetch('/borrar-item-cola', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                    body: JSON.stringify({ index })
+                });
+                const data = await res.json();
+                addLog('Elemento eliminado');
+                verCola(); 
+            } catch(e) { alert('Error al borrar item'); }
+        }
+
+        function confirmarBorrado(action, nombre) {
+            if(confirm(`¿Seguro que quieres borrar la memoria del ${nombre}?`)) cmd(action);
+        }
+
+        socket.on('status', (msg) => {
+            if (typeof msg === 'object' && msg.text) {
+                updateUIStatus(msg.text);
+            } else if (typeof msg === 'string') {
+                updateUIStatus(msg);
+            }
+        });
+
+        function updateUIStatus(msg) {
+            statusBox.innerText = msg;
+            statusBox.className = 'status'; 
+            if(msg.includes('ACTIVO')) statusBox.classList.add('ready');
+            else if(msg.includes('Cargando') || msg.includes('ESCANEA')) statusBox.classList.add('wait');
+            else if(msg.includes('Error') || msg.includes('Desconectado') || msg.includes('DETENIDO')) statusBox.classList.add('error');
+            else statusBox.classList.add('idle');
+            addLog(msg);
+        }
+
+        let countdownInterval = null;
+
+        function startQRCountdown(code) {
+            if (countdownInterval) clearInterval(countdownInterval);
+            let segundos = 20;
+
+            function render() {
+                const color = segundos <= 5 ? '#dc3545' : segundos <= 10 ? '#fd7e14' : '#198754';
+                const aviso = segundos <= 5 ? '⚠️ ¡EXPIRANDO!' : segundos <= 10 ? '⚡ Rápido...' : '📸 ESCANEA AHORA';
+                qrArea.innerHTML = `
+                    <div style="background:white; padding:10px; border-radius:10px; display:inline-block; border: 3px solid ${color};">
+                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" />
+                        <p style="font-weight:bold; margin-top:5px; color:${color};">${aviso}</p>
+                        <p style="font-size:2em; font-weight:bold; color:${color}; margin:0;">${segundos}s</p>
+                    </div>`;
+            }
+
+            render();
+            countdownInterval = setInterval(() => {
+                segundos--;
+                if (segundos <= 0) {
+                    clearInterval(countdownInterval);
+                    countdownInterval = null;
+                    qrArea.innerHTML = `<div style="padding:20px; background:#fff3cd; border-radius:10px; color:#664d03; font-weight:bold;">⏰ QR expirado. WhatsApp enviará uno nuevo automáticamente...</div>`;
+                } else {
+                    render();
+                }
+            }, 1000);
+        }
+
+        socket.on('qr', (code) => {
+            addLog('📸 Nuevo QR recibido — escanea en 20 segundos');
+            startQRCountdown(code);
+        });
+        
+        socket.on('connected', (u) => {
+            if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+            qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
+        });
+
+        setInterval(async () => {
+            const token = document.getElementById('token').value;
+            if(!token) return;
+            try {
+                const res = await fetch('/status');
+                const data = await res.json();
+                if(data.ciclo) {
+                    cicloInfoDiv.innerHTML = `<span class="ciclo-badge">🔄 Ciclo actual: ${data.ciclo}</span>`;
+                }
+                if(data.text && statusBox.innerText !== data.text) {
+                    updateUIStatus(data.text);
+                }
+            } catch(e) {}
+        }, 10000);
+
+    </script>
+</body>
+</html>

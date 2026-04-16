@@ -78,10 +78,12 @@ app.use(express.json());
 app.set('view engine', 'ejs');
 console.log('✅ [MIDDLEWARE-2] Middleware configurado');
 
-// --- VARIABLES DE ESTADO --- 
-let client = null; 
-let activeSessionName = null; 
+// --- VARIABLES DE ESTADO ---
+let client = null;
+let activeSessionName = null;
 let isClientReady = false;
+let lastQR = null;        // Último QR recibido (para nuevas conexiones al panel)
+let lastQRSession = null; // A qué sesión pertenece ese QR
 
 // --- NUEVA ESTRUCTURA DE CUBETAS (RATIO 3:2) ---
 let pdfQueue = [];
@@ -346,12 +348,16 @@ async function startSession(sessionName, isManual = false) {
         }
         
         console.log('📤 [QR-5] Emitiendo QR al cliente web');
-        io.emit('qr', qr); 
-        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+        lastQR = qr;
+        lastQRSession = sessionName;
+        io.emit('qr', qr);
+        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`);
     });
 
-    client.on('ready', () => { 
-        isClientReady = true; 
+    client.on('ready', () => {
+        isClientReady = true;
+        lastQR = null;
+        lastQRSession = null;
         console.log(`✅✅✅ [READY-1] ${sessionName} CONECTADO Y LISTO ✅✅✅`);
         console.log(`📱 [READY-2] Nombre: ${client.info.pushname}`);
         console.log(`📱 [READY-3] Número: ${client.info.wid.user}`);
@@ -383,9 +389,11 @@ async function startSession(sessionName, isManual = false) {
         }
     });
 
-    client.on('disconnected', (reason) => { 
+    client.on('disconnected', (reason) => {
         isClientReady = false;
-        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`); 
+        lastQR = null;
+        lastQRSession = null;
+        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`);
         io.emit('status', '❌ Desconectado'); 
         if (reason === 'LOGOUT') {
             console.log('🗑️ [DISCONNECTED-2] Borrando sesión por LOGOUT');
@@ -782,7 +790,27 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
-app.post('/detener-bot', authMiddleware, async (req, res) => { 
+app.post('/borrar-chip-a', authMiddleware, (req, res) => {
+    console.log('🗑️ [ROUTE] POST /borrar-chip-a');
+    borrarSesion('chip-a');
+    if (activeSessionName === 'chip-a') {
+        lastQR = null;
+        lastQRSession = null;
+    }
+    res.json({ success: true, message: 'Memoria de Chip A borrada' });
+});
+
+app.post('/borrar-chip-b', authMiddleware, (req, res) => {
+    console.log('🗑️ [ROUTE] POST /borrar-chip-b');
+    borrarSesion('chip-b');
+    if (activeSessionName === 'chip-b') {
+        lastQR = null;
+        lastQRSession = null;
+    }
+    res.json({ success: true, message: 'Memoria de Chip B borrada' });
+});
+
+app.post('/detener-bot', authMiddleware, async (req, res) => {
     console.log('🛑 [ROUTE] POST /detener-bot');
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
@@ -824,12 +852,19 @@ console.log('🔌 [SOCKET-3] Configurando Socket.IO connection handler...');
 io.on('connection', (socket) => {
     console.log('🔗 [SOCKET-CONNECTION] Nuevo cliente conectado:', socket.id);
     
-    if(activeSessionName) {
-        const statusMsg = isClientReady 
-            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
-            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
+    if (activeSessionName) {
+        const statusMsg = isClientReady
+            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}`
+            : lastQR
+                ? `📸 SESIÓN CADUCADA: ESCANEA AHORA (${activeSessionName.toUpperCase()})`
+                : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
         console.log(`📤 [SOCKET-EMIT] Enviando status: ${statusMsg}`);
         socket.emit('status', statusMsg);
+    }
+    // Si hay un QR vigente en memoria, mandarlo al nuevo cliente
+    if (lastQR && !isClientReady) {
+        console.log(`📤 [SOCKET-EMIT] Reenviando QR guardado al nuevo cliente`);
+        socket.emit('qr', lastQR);
     }
     
     socket.on('disconnect', () => {
