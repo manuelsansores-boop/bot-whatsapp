@@ -10,7 +10,7 @@ const { execSync } = require('child_process');
 const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16k — botón GENERAR QR visible arriba');
+console.log('📦 [VERSION] build 2026-04-16n — auto solo si sesión válida');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -331,15 +331,15 @@ async function startSession(sessionName, isManual = false) {
         console.log(`📸 [QR-1] QR recibido para ${sessionName}`);
         
         if (!isManual) {
-            console.log(`⛔ [QR-2] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
-            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
-            abortandoPorFaltaDeQR = true; 
-            try { 
-                await client.destroy(); 
-                console.log('✅ [QR-3] Cliente destruido por falta de QR');
-            } catch(e) {
-                console.log('⚠️ [QR-4] Error destruyendo:', e.message);
-            }
+            console.log(`⛔ [QR-2] Sesión ${sessionName} caducada — avisando al panel`);
+            // Guardar el QR silenciosamente para cuando el usuario lo pida
+            lastQR = qr;
+            lastQRSession = sessionName;
+            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA — haz clic en Forzar/Escanear ${sessionName.toUpperCase().replace('CHIP-', '')} y luego GENERAR QR`);
+            abortandoPorFaltaDeQR = true;
+            try {
+                await client.destroy();
+            } catch(e) {}
             client = null;
             isClientReady = false;
             return;
@@ -900,22 +900,22 @@ server.listen(PORT, '0.0.0.0', () => {
     
     const turno = getTurnoActual();
     console.log(`🎯 [INIT-2] Turno actual calculado: ${turno}`);
-    
+
     if (existeSesion(turno)) {
         console.log(`✅ [INIT-3] Sesión existe, iniciando automáticamente: ${turno}`);
         startSession(turno, false);
     } else {
-        console.log(`ℹ️ [INIT-3] No hay sesión guardada para ${turno}`);
+        console.log(`ℹ️ [INIT-3] No hay sesión — esperando acción manual`);
+        io.emit('status', '⏳ Sin sesión activa — usa Forzar/Escanear para conectar');
     }
-    
+
     console.log('⏰ [INIT-4] Configurando verificador de turnos (cada 60s)...');
     setInterval(() => {
         const turnoDebido = getTurnoActual();
         console.log(`🔍 [TURNO-CHECK] Verificando turno - Actual: ${activeSessionName}, Debido: ${turnoDebido}`);
-        
         if (activeSessionName && activeSessionName !== turnoDebido) {
             console.log(`🔄 [TURNO-CHANGE] Cambio de turno detectado - reiniciando proceso`);
-            process.exit(0); 
+            process.exit(0);
         }
     }, 60000); 
     

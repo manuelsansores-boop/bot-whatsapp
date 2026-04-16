@@ -50,7 +50,7 @@
     <div class="card">
         <h1>🏓 Bot Ping-Pong v7</h1>
         <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2</p>
-        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16k — botón GENERAR QR visible</p>
+        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16n — auto solo si sesión válida</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         <div id="ciclo-info"></div>
@@ -246,15 +246,14 @@
                     addLog('❌ Error dibujando QR: ' + error.message);
                     return;
                 }
-                document.getElementById('qr-placeholder').style.display = 'none';
                 document.getElementById('qr-imagen').style.display = 'block';
                 addLog('📸 QR dibujado — escanéalo ahora');
             });
         }
-        
+
         socket.on('connected', (u) => {
-            document.getElementById('qr-placeholder').style.display = 'none';
             document.getElementById('qr-imagen').style.display = 'none';
+            qrRawString = null;
             qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
         });
 
