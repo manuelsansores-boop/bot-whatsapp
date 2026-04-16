@@ -4,13 +4,11 @@ const http = require('http');
 const { Server } = require("socket.io");
 const fs = require('fs');
 const path = require('path');
-const moment = require('moment-timezone');
-const puppeteer = require('puppeteer');
+const moment = require('moment-timezone'); 
+const puppeteer = require('puppeteer'); 
 const { execSync } = require('child_process');
-const QRCode = require('qrcode');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
-console.log('📦 [VERSION] build 2026-04-16n — auto solo si sesión válida');
 
 // ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
 let RUTA_CHROME_DETECTADA = null;
@@ -80,12 +78,10 @@ app.use(express.json());
 app.set('view engine', 'ejs');
 console.log('✅ [MIDDLEWARE-2] Middleware configurado');
 
-// --- VARIABLES DE ESTADO ---
-let client = null;
-let activeSessionName = null;
+// --- VARIABLES DE ESTADO --- 
+let client = null; 
+let activeSessionName = null; 
 let isClientReady = false;
-let lastQR = null;        // Último QR recibido (para nuevas conexiones al panel)
-let lastQRSession = null; // A qué sesión pertenece ese QR
 
 // --- NUEVA ESTRUCTURA DE CUBETAS (RATIO 3:2) ---
 let pdfQueue = [];
@@ -172,14 +168,15 @@ const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) 
 
 const checkOfficeHours = () => { 
     const hora = moment().tz('America/Mexico_City').hour();
-    return (hora >= 8 && hora < 18) ? { isOpen: true } : { isOpen: false }; 
+    return (hora >= 8 && hora < 19) ? { isOpen: true } : { isOpen: false };
 };
 
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
-    // Turnos de 2 horas (Chip A: 8-10, 12-14, 16-18)
-    if ((hora >= 8 && hora < 10) || (hora >= 12 && hora < 14) || (hora >= 16 && hora < 18)) return 'chip-a';
-    return 'chip-b'; 
+    // Chip B: 10-13, 14-16, 18-19
+    if ((hora >= 10 && hora < 13) || (hora >= 14 && hora < 16) || (hora >= 18 && hora < 19)) return 'chip-b';
+    // Chip A: 8-10, 13-14, 16-18
+    return 'chip-a';
 }
 
 function getFolderInfo(sessionName) {
@@ -292,17 +289,19 @@ async function startSession(sessionName, isManual = false) {
         protocolTimeout: 300000,
         ignoreDefaultArgs: ['--enable-automation'], 
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
+            '--disable-accelerated-2d-canvas', 
+            '--no-first-run', 
+            '--single-process', 
             '--disable-gpu',
-            '--js-flags=--max-old-space-size=1024',
-            '--disable-blink-features=AutomationControlled',
+            '--js-flags="--max-old-space-size=1024"',
+            '--disable-blink-features=AutomationControlled', 
             '--disable-infobars',
-            '--window-size=1280,720',
-            `--user-data-dir=./data/session-client-${sessionName}`
+            '--window-size=1920,1080',
+            `--user-data-dir=./data/session-client-${sessionName}`,
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         ]
     };
     
@@ -315,13 +314,15 @@ async function startSession(sessionName, isManual = false) {
 
     console.log('📱 [WHATSAPP-1] Creando cliente WhatsApp...');
     client = new Client({
-        authStrategy: new LocalAuth({
-            clientId: `client-${sessionName}`,
-            dataPath: './data'
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        authStrategy: new LocalAuth({ 
+            clientId: `client-${sessionName}`, 
+            dataPath: './data' 
         }),
         puppeteer: puppeteerConfig,
-        qrMaxRetries: isManual ? 5 : 0,
+        qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath,
+        
     });
     console.log('✅ [WHATSAPP-2] Cliente WhatsApp creado');
 
@@ -331,31 +332,27 @@ async function startSession(sessionName, isManual = false) {
         console.log(`📸 [QR-1] QR recibido para ${sessionName}`);
         
         if (!isManual) {
-            console.log(`⛔ [QR-2] Sesión ${sessionName} caducada — avisando al panel`);
-            // Guardar el QR silenciosamente para cuando el usuario lo pida
-            lastQR = qr;
-            lastQRSession = sessionName;
-            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA — haz clic en Forzar/Escanear ${sessionName.toUpperCase().replace('CHIP-', '')} y luego GENERAR QR`);
-            abortandoPorFaltaDeQR = true;
-            try {
-                await client.destroy();
-            } catch(e) {}
+            console.log(`⛔ [QR-2] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
+            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
+            abortandoPorFaltaDeQR = true; 
+            try { 
+                await client.destroy(); 
+                console.log('✅ [QR-3] Cliente destruido por falta de QR');
+            } catch(e) {
+                console.log('⚠️ [QR-4] Error destruyendo:', e.message);
+            }
             client = null;
             isClientReady = false;
             return;
         }
         
-        // Guardar silenciosamente — solo se muestra cuando el usuario pide
-        lastQR = qr;
-        lastQRSession = sessionName;
-        io.emit('status', `📸 QR listo (${sessionName.toUpperCase()}) — haz clic en GENERAR QR`);
-        console.log(`📸 [QR-5] QR guardado para ${sessionName} — esperando que el usuario lo pida`);
+        console.log('📤 [QR-5] Emitiendo QR al cliente web');
+        io.emit('qr', qr); 
+        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
     });
 
-    client.on('ready', () => {
-        isClientReady = true;
-        lastQR = null;
-        lastQRSession = null;
+    client.on('ready', () => { 
+        isClientReady = true; 
         console.log(`✅✅✅ [READY-1] ${sessionName} CONECTADO Y LISTO ✅✅✅`);
         console.log(`📱 [READY-2] Nombre: ${client.info.pushname}`);
         console.log(`📱 [READY-3] Número: ${client.info.wid.user}`);
@@ -387,11 +384,9 @@ async function startSession(sessionName, isManual = false) {
         }
     });
 
-    client.on('disconnected', (reason) => {
+    client.on('disconnected', (reason) => { 
         isClientReady = false;
-        lastQR = null;
-        lastQRSession = null;
-        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`);
+        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`); 
         io.emit('status', '❌ Desconectado'); 
         if (reason === 'LOGOUT') {
             console.log('🗑️ [DISCONNECTED-2] Borrando sesión por LOGOUT');
@@ -491,7 +486,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         </html>`;
 
         console.log('🌐 [PDF-2] Lanzando navegador para PDF...');
-        const browser = await puppeteer.launch({
+        const browser = await puppeteer.launch({ 
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -499,8 +494,9 @@ async function generarYEnviarPDF(item, clientInstance) {
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
+                '--single-process',
                 '--disable-gpu',
-                '--js-flags=--max-old-space-size=512'
+                '--js-flags="--max-old-space-size=512"'
             ],
             executablePath: RUTA_CHROME_DETECTADA || undefined 
         });
@@ -707,22 +703,16 @@ const processQueue = async () => {
 // --- RUTAS API --- 
 console.log('🛣️ [ROUTES-1] Configurando rutas...');
 
-app.post('/iniciar-chip-a', authMiddleware, (req, res) => {
-    console.log('🔵 [ROUTE] POST /iniciar-chip-a — borrando sesión previa y arrancando manual');
-    borrarSesion('chip-a');
-    lastQR = null;
-    lastQRSession = null;
-    startSession('chip-a', true);
-    res.json({ success: true, message: 'Chip A: sesión borrada, arrancando...' });
+app.post('/iniciar-chip-a', authMiddleware, (req, res) => { 
+    console.log('🔵 [ROUTE] POST /iniciar-chip-a');
+    startSession('chip-a', true); 
+    res.json({ success: true, message: 'Iniciando chip-a manual' }); 
 });
 
-app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
-    console.log('🟢 [ROUTE] POST /iniciar-chip-b — borrando sesión previa y arrancando manual');
-    borrarSesion('chip-b');
-    lastQR = null;
-    lastQRSession = null;
-    startSession('chip-b', true);
-    res.json({ success: true, message: 'Chip B: sesión borrada, arrancando...' });
+app.post('/iniciar-chip-b', authMiddleware, (req, res) => { 
+    console.log('🟢 [ROUTE] POST /iniciar-chip-b');
+    startSession('chip-b', true); 
+    res.json({ success: true, message: 'Iniciando chip-b manual' }); 
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
@@ -793,36 +783,7 @@ app.post('/limpiar-cola', authMiddleware, (req, res) => {
     res.json({ success: true, message: 'Colas vaciadas' }); 
 });
 
-app.get('/generar-qr', authMiddleware, async (req, res) => {
-    console.log('📸 [ROUTE] GET /generar-qr — usuario pidió el QR');
-    if (!lastQR || isClientReady) {
-        return res.json({ success: false, message: 'No hay QR disponible. Haz clic en Forzar/Escanear primero.' });
-    }
-    console.log('✅ [QR] Enviando QR al panel');
-    res.json({ success: true, qr: lastQR });
-});
-
-app.post('/borrar-chip-a', authMiddleware, (req, res) => {
-    console.log('🗑️ [ROUTE] POST /borrar-chip-a');
-    borrarSesion('chip-a');
-    if (activeSessionName === 'chip-a') {
-        lastQR = null;
-        lastQRSession = null;
-    }
-    res.json({ success: true, message: 'Memoria de Chip A borrada' });
-});
-
-app.post('/borrar-chip-b', authMiddleware, (req, res) => {
-    console.log('🗑️ [ROUTE] POST /borrar-chip-b');
-    borrarSesion('chip-b');
-    if (activeSessionName === 'chip-b') {
-        lastQR = null;
-        lastQRSession = null;
-    }
-    res.json({ success: true, message: 'Memoria de Chip B borrada' });
-});
-
-app.post('/detener-bot', authMiddleware, async (req, res) => {
+app.post('/detener-bot', authMiddleware, async (req, res) => { 
     console.log('🛑 [ROUTE] POST /detener-bot');
     try { await client.destroy(); } catch(e) {}
     process.exit(0); 
@@ -864,19 +825,12 @@ console.log('🔌 [SOCKET-3] Configurando Socket.IO connection handler...');
 io.on('connection', (socket) => {
     console.log('🔗 [SOCKET-CONNECTION] Nuevo cliente conectado:', socket.id);
     
-    if (activeSessionName) {
-        const statusMsg = isClientReady
-            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}`
-            : lastQR
-                ? `📸 SESIÓN CADUCADA: ESCANEA AHORA (${activeSessionName.toUpperCase()})`
-                : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
+    if(activeSessionName) {
+        const statusMsg = isClientReady 
+            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
+            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
         console.log(`📤 [SOCKET-EMIT] Enviando status: ${statusMsg}`);
         socket.emit('status', statusMsg);
-    }
-    // Si hay un QR vigente en memoria, mandarlo al nuevo cliente
-    if (lastQR && !isClientReady) {
-        console.log(`📤 [SOCKET-EMIT] Reenviando QR guardado al nuevo cliente`);
-        socket.emit('qr', lastQR);
     }
     
     socket.on('disconnect', () => {
@@ -900,22 +854,22 @@ server.listen(PORT, '0.0.0.0', () => {
     
     const turno = getTurnoActual();
     console.log(`🎯 [INIT-2] Turno actual calculado: ${turno}`);
-
+    
     if (existeSesion(turno)) {
         console.log(`✅ [INIT-3] Sesión existe, iniciando automáticamente: ${turno}`);
         startSession(turno, false);
     } else {
-        console.log(`ℹ️ [INIT-3] No hay sesión — esperando acción manual`);
-        io.emit('status', '⏳ Sin sesión activa — usa Forzar/Escanear para conectar');
+        console.log(`ℹ️ [INIT-3] No hay sesión guardada para ${turno}`);
     }
-
+    
     console.log('⏰ [INIT-4] Configurando verificador de turnos (cada 60s)...');
     setInterval(() => {
         const turnoDebido = getTurnoActual();
         console.log(`🔍 [TURNO-CHECK] Verificando turno - Actual: ${activeSessionName}, Debido: ${turnoDebido}`);
+        
         if (activeSessionName && activeSessionName !== turnoDebido) {
             console.log(`🔄 [TURNO-CHANGE] Cambio de turno detectado - reiniciando proceso`);
-            process.exit(0);
+            process.exit(0); 
         }
     }, 60000); 
     

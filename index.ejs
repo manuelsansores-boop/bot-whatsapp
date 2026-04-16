@@ -49,8 +49,7 @@
 <body>
     <div class="card">
         <h1>🏓 Bot Ping-Pong v7</h1>
-        <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2</p>
-        <p style="background:#0d6efd; color:white; font-size:11px; padding:4px 10px; border-radius:20px; display:inline-block; margin:0;">⚡ build 2026-04-16n — auto solo si sesión válida</p>
+        <p style="color:#666; font-size:13px;">Persistencia JSON + Lógica Equilibrada 3:2 [cite: 1, 2]</p>
         
         <div id="status-box" class="status idle">💤 Esperando sistema...</div>
         <div id="ciclo-info"></div>
@@ -65,23 +64,15 @@
         <div class="grid-turnos">
             <div class="turno-box box-a">
                 <span class="turno-title">🔵 CHIP A</span>
-                <div class="horarios">8:00-10:00 | 12:00-14:00 | 16:00-18:00</div>
+                <div class="horarios">8:00-10:00 | 13:00-14:00 | 16:00-18:00</div>
                 <button class="btn btn-chip-a" onclick="cmd('iniciar-chip-a')">▶ Forzar/Escanear A</button>
                 <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-a', 'CHIP A')">🗑 BORRAR MEMORIA A</button>
             </div>
             <div class="turno-box box-b">
                 <span class="turno-title">🟣 CHIP B</span>
-                <div class="horarios">10:00-12:00 | 14:00-16:00 | 18:00-20:00</div>
+                <div class="horarios">10:00-13:00 | 14:00-16:00 | 18:00-19:00</div>
                 <button class="btn btn-chip-b" onclick="cmd('iniciar-chip-b')">▶ Forzar/Escanear B</button>
                 <button class="btn btn-danger" onclick="confirmarBorrado('borrar-chip-b', 'CHIP B')">🗑 BORRAR MEMORIA B</button>
-            </div>
-        </div>
-
-        <div style="margin-top:15px;">
-            <button class="btn btn-green" style="font-size:1.1em; padding:14px 30px; width:auto;" onclick="pedirQR()">📸 GENERAR QR</button>
-            <div id="qr-imagen" style="display:none; margin-top:10px;">
-                <canvas id="qr-canvas" style="border-radius:10px; border:3px solid #198754;"></canvas>
-                <p style="font-weight:bold; color:#198754; margin-top:8px;">📸 ESCANEA AHORA</p>
             </div>
         </div>
 
@@ -95,11 +86,10 @@
             <div id="lista-cola"></div>
         </div>
 
-        <div id="qr-area"></div>
+        <div id="qr-area" style="margin-top: 20px;"></div>
         <div class="log" id="logs"><div>> Panel listo...</div></div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
@@ -210,50 +200,11 @@
             addLog(msg);
         }
 
-        let qrRawString = null;
-
-        socket.on('qr', (qrString) => {
-            // Solo guardar — el usuario decide cuándo verlo
-            qrRawString = qrString;
+        socket.on('qr', (code) => {
+            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA AHORA</p></div>`;
         });
-
-        async function pedirQR() {
-            const token = document.getElementById('token').value;
-            if (!token) return alert('⚠️ Pon el token primero');
-
-            // Si ya tenemos el string del QR en memoria, usarlo directo
-            if (qrRawString) {
-                mostrarQR(qrRawString);
-                return;
-            }
-
-            // Si no, pedirlo al servidor
-            try {
-                const res = await fetch('/generar-qr', { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await res.json();
-                if (data.success && data.qr) {
-                    mostrarQR(data.qr);
-                } else {
-                    addLog('⚠️ ' + (data.message || 'Sin QR — haz clic en Forzar/Escanear primero'));
-                }
-            } catch(e) { addLog('❌ Error pidiendo QR'); }
-        }
-
-        function mostrarQR(qrString) {
-            const canvas = document.getElementById('qr-canvas');
-            QRCode.toCanvas(canvas, qrString, { width: 256, margin: 2 }, function(error) {
-                if (error) {
-                    addLog('❌ Error dibujando QR: ' + error.message);
-                    return;
-                }
-                document.getElementById('qr-imagen').style.display = 'block';
-                addLog('📸 QR dibujado — escanéalo ahora');
-            });
-        }
-
+        
         socket.on('connected', (u) => {
-            document.getElementById('qr-imagen').style.display = 'none';
-            qrRawString = null;
             qrArea.innerHTML = `<div style="padding:15px; border-radius:10px; background:${u.session==='chip-a'?'#0d6efd':'#6610f2'}; color:white;"><h3>👤 ${u.session.toUpperCase()} CONECTADO</h3><p>${u.name}</p><p>${u.number}</p></div>`;
         });
 
