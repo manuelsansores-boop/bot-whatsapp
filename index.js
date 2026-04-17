@@ -166,16 +166,17 @@ const authMiddleware = (req, res, next) => {
 // --- UTILIDADES --- 
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
 
-const checkOfficeHours = () => { 
+const checkOfficeHours = () => {
     const hora = moment().tz('America/Mexico_City').hour();
-    return (hora >= 8 && hora < 19) ? { isOpen: true } : { isOpen: false };
+    // ⚠️ EXTENDIDO TEMPORALMENTE HASTA 21H PARA PRUEBA DE RECONEXIÓN CHIP A
+    return (hora >= 8 && hora < 21) ? { isOpen: true } : { isOpen: false };
 };
 
 function getTurnoActual() {
     const hora = moment().tz('America/Mexico_City').hour();
     // Chip B: 10-13, 14-16, 18-19
     if ((hora >= 10 && hora < 13) || (hora >= 14 && hora < 16) || (hora >= 18 && hora < 19)) return 'chip-b';
-    // Chip A: 8-10, 13-14, 16-18
+    // Chip A: 8-10, 13-14, 16-18, 19-21 (ventana de prueba de reconexión), y resto
     return 'chip-a';
 }
 
@@ -240,13 +241,20 @@ function recursiveDeleteLocks(dirPath) {
     }
 }
 
-// --- FUNCIÓN MAESTRA: INICIAR SESIÓN --- 
+// --- FUNCIÓN MAESTRA: INICIAR SESIÓN ---
 async function startSession(sessionName, isManual = false) {
     console.log(`\n🔵 [SESSION-START-1] ========== INICIANDO SESIÓN: ${sessionName.toUpperCase()} ==========`);
     console.log(`🔵 [SESSION-START-2] Modo: ${isManual ? 'MANUAL' : 'AUTO'}`);
     console.log(`🔵 [SESSION-START-3] Timestamp: ${new Date().toISOString()}`);
-    
-    let abortandoPorFaltaDeQR = false; 
+    const mem0 = process.memoryUsage();
+    console.log(`📊 [SESSION-START-4] RAM inicial: heap ${Math.round(mem0.heapUsed/1024/1024)}/${Math.round(mem0.heapTotal/1024/1024)}MB, RSS ${Math.round(mem0.rss/1024/1024)}MB`);
+
+    let abortandoPorFaltaDeQR = false;
+    // Variables para monitor de QR
+    let qrEscaneoTime = null;
+    let qrMonitorInterval = null;
+    let qrContador = 0;
+    let autenticadoRecibido = false; 
 
     if (client) { 
         console.log('⚠️ [SESSION-4] Cliente existente detectado, destruyendo...');
@@ -328,78 +336,179 @@ async function startSession(sessionName, isManual = false) {
 
     console.log('🎧 [EVENTS-1] Registrando event handlers...');
     
-    client.on('qr', async (qr) => { 
-        console.log(`📸 [QR-1] QR recibido para ${sessionName}`);
-        
+    client.on('qr', async (qr) => {
+        qrContador++;
+        const tsQR = new Date().toISOString();
+        console.log(`\n📸 ========== [QR-EVENTO #${qrContador}] ==========`);
+        console.log(`📸 [QR-1] QR #${qrContador} recibido para ${sessionName} | ${tsQR}`);
+        console.log(`📸 [QR-2] Longitud código QR: ${qr.length} caracteres`);
+        console.log(`📸 [QR-3] isManual: ${isManual} | qrMaxRetries configurado: ${isManual ? 5 : 0}`);
+        const memQR = process.memoryUsage();
+        console.log(`📊 [QR-4] RAM al recibir QR: heap ${Math.round(memQR.heapUsed/1024/1024)}/${Math.round(memQR.heapTotal/1024/1024)}MB, RSS ${Math.round(memQR.rss/1024/1024)}MB`);
+
+        // Limpia monitor anterior si venía de un QR previo
+        if (qrMonitorInterval) {
+            console.log(`🧹 [QR-5] Limpiando monitor del QR anterior`);
+            clearInterval(qrMonitorInterval);
+            qrMonitorInterval = null;
+        }
+
         if (!isManual) {
-            console.log(`⛔ [QR-2] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
+            console.log(`⛔ [QR-6] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
             io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
-            abortandoPorFaltaDeQR = true; 
-            try { 
-                await client.destroy(); 
-                console.log('✅ [QR-3] Cliente destruido por falta de QR');
+            abortandoPorFaltaDeQR = true;
+            try {
+                await client.destroy();
+                console.log('✅ [QR-7] Cliente destruido por falta de QR en modo AUTO');
             } catch(e) {
-                console.log('⚠️ [QR-4] Error destruyendo:', e.message);
+                console.log('⚠️ [QR-8] Error destruyendo cliente en modo AUTO:', e.message);
             }
             client = null;
             isClientReady = false;
             return;
         }
-        
-        console.log('📤 [QR-5] Emitiendo QR al cliente web');
-        io.emit('qr', qr); 
-        io.emit('status', `📸 SESIÓN CADUCADA: ESCANEA AHORA (${sessionName.toUpperCase()})`); 
+
+        console.log(`📤 [QR-9] Emitiendo QR #${qrContador} al panel web...`);
+        io.emit('qr', qr);
+        io.emit('status', `📸 ESCANEA EL QR AHORA (${sessionName.toUpperCase()}) - intento #${qrContador}`);
+        console.log(`✅ [QR-10] QR emitido al panel. Esperando que el teléfono escanee...`);
+        console.log(`📸 ================================================\n`);
+
+        // --- MONITOR POST-QR: detecta si el teléfono escaneó pero el servidor no recibió "authenticated" ---
+        qrEscaneoTime = Date.now();
+        autenticadoRecibido = false;
+        let segundosEspera = 0;
+
+        qrMonitorInterval = setInterval(() => {
+            segundosEspera += 10;
+            const memMon = process.memoryUsage();
+            const estadoCliente = client ? 'existe' : 'NULL';
+
+            if (autenticadoRecibido) {
+                console.log(`✅ [QR-MONITOR] Autenticación confirmada, deteniendo monitor`);
+                clearInterval(qrMonitorInterval);
+                qrMonitorInterval = null;
+                return;
+            }
+
+            console.log(`⏳ [QR-MONITOR] +${segundosEspera}s esperando 'authenticated' | cliente: ${estadoCliente} | autenticado: ${autenticadoRecibido} | RAM heap: ${Math.round(memMon.heapUsed/1024/1024)}MB RSS: ${Math.round(memMon.rss/1024/1024)}MB`);
+
+            if (segundosEspera === 60) {
+                console.log(`⚠️ [QR-MONITOR] 60s sin autenticación después del QR #${qrContador}`);
+                console.log(`⚠️ [QR-MONITOR] Si el teléfono dice "Iniciando sesión" y no avanza, posibles causas:`);
+                console.log(`   → 1. Red lenta/inestable entre WhatsApp servers y este servidor`);
+                console.log(`   → 2. Chrome/Puppeteer colgado internamente`);
+                console.log(`   → 3. Sesión anterior corrupta en ./data/session-client-${sessionName}`);
+                console.log(`   → 4. El evento 'authenticated' de whatsapp-web.js no está disparando`);
+                io.emit('status', `⚠️ 60s sin respuesta del servidor tras escaneo (${sessionName.toUpperCase()})`);
+            }
+
+            if (segundosEspera >= 120) {
+                console.log(`🚨 [QR-MONITOR] ========== TIMEOUT 120s ==========`);
+                console.log(`🚨 [QR-MONITOR] El teléfono escaneó pero el servidor NUNCA recibió 'authenticated'`);
+                console.log(`🚨 [QR-MONITOR] Sesión: ${sessionName} | QR #${qrContador}`);
+                const memTO = process.memoryUsage();
+                console.log(`🚨 [QR-MONITOR] RAM final: heap ${Math.round(memTO.heapUsed/1024/1024)}/${Math.round(memTO.heapTotal/1024/1024)}MB, RSS ${Math.round(memTO.rss/1024/1024)}MB`);
+                console.log(`🚨 [QR-MONITOR] Recomendación: borrar memoria de ${sessionName.toUpperCase()} y reintentar`);
+                io.emit('status', `🚨 TIMEOUT: Escaneo no se completó en 120s. Borra la memoria y reintenta.`);
+                clearInterval(qrMonitorInterval);
+                qrMonitorInterval = null;
+            }
+        }, 10000);
     });
 
-    client.on('ready', () => { 
-        isClientReady = true; 
-        console.log(`✅✅✅ [READY-1] ${sessionName} CONECTADO Y LISTO ✅✅✅`);
+    client.on('ready', () => {
+        isClientReady = true;
+        // Limpiar monitor de QR si aún corría
+        if (qrMonitorInterval) {
+            clearInterval(qrMonitorInterval);
+            qrMonitorInterval = null;
+        }
+        const tiempoDesdeQR = qrEscaneoTime ? Math.round((Date.now() - qrEscaneoTime) / 1000) : 'N/A';
+        console.log(`\n✅✅✅ [READY-1] ========== ${sessionName.toUpperCase()} CONECTADO Y LISTO ✅✅✅`);
         console.log(`📱 [READY-2] Nombre: ${client.info.pushname}`);
         console.log(`📱 [READY-3] Número: ${client.info.wid.user}`);
-        
-        io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`); 
-        io.emit('connected', { 
-            name: client.info.pushname, 
-            number: client.info.wid.user, 
-            session: sessionName 
-        }); 
-        
-        console.log('🚀 [READY-4] Iniciando procesamiento de cola...');
-        processQueue(); 
+        console.log(`📱 [READY-4] Plataforma: ${client.info.platform || 'desconocida'}`);
+        console.log(`⏱️ [READY-5] Tiempo total desde escaneo QR hasta READY: ${tiempoDesdeQR}s`);
+        const memR = process.memoryUsage();
+        console.log(`📊 [READY-6] RAM al estar listo: heap ${Math.round(memR.heapUsed/1024/1024)}/${Math.round(memR.heapTotal/1024/1024)}MB, RSS ${Math.round(memR.rss/1024/1024)}MB`);
+
+        io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`);
+        io.emit('connected', {
+            name: client.info.pushname,
+            number: client.info.wid.user,
+            session: sessionName
+        });
+
+        console.log('🚀 [READY-7] Iniciando procesamiento de cola...');
+        processQueue();
     });
 
-    client.on('auth_failure', async () => {
-        console.error('❌ [AUTH-FAILURE-1] CREDENCIALES INVÁLIDAS');
-        io.emit('status', '⛔ CREDENCIALES INVÁLIDAS');
-        try { 
-            await client.destroy(); 
-            console.log('✅ [AUTH-FAILURE-2] Cliente destruido');
+    client.on('auth_failure', async (msg) => {
+        const tiempoDesdeQR = qrEscaneoTime ? Math.round((Date.now() - qrEscaneoTime) / 1000) : 'N/A';
+        console.error(`\n❌ [AUTH-FAILURE-1] ========== FALLO DE AUTENTICACIÓN ==========`);
+        console.error(`❌ [AUTH-FAILURE-2] Sesión: ${sessionName} | isManual: ${isManual}`);
+        console.error(`❌ [AUTH-FAILURE-3] Mensaje recibido: ${JSON.stringify(msg)}`);
+        console.error(`❌ [AUTH-FAILURE-4] Tiempo desde último QR: ${tiempoDesdeQR}s`);
+        console.error(`❌ [AUTH-FAILURE-5] Timestamp: ${new Date().toISOString()}`);
+        console.error(`❌ [AUTH-FAILURE-6] Esto puede pasar cuando:`);
+        console.error(`   → La sesión guardada está corrupta o caducada`);
+        console.error(`   → El teléfono cerró sesión de WhatsApp Web`);
+        console.error(`   → Credenciales de la cuenta inválidas`);
+        io.emit('status', '⛔ FALLO DE AUTENTICACIÓN - ver logs');
+        if (qrMonitorInterval) { clearInterval(qrMonitorInterval); qrMonitorInterval = null; }
+        try {
+            await client.destroy();
+            console.log('✅ [AUTH-FAILURE-7] Cliente destruido tras fallo');
         } catch(e) {
-            console.log('⚠️ [AUTH-FAILURE-3] Error destruyendo:', e.message);
+            console.log('⚠️ [AUTH-FAILURE-8] Error destruyendo:', e.message);
         }
         client = null;
         if (!isManual) {
-            console.log('🗑️ [AUTH-FAILURE-4] Borrando sesión por auth failure');
+            console.log('🗑️ [AUTH-FAILURE-9] Borrando sesión por auth failure en modo AUTO');
             borrarSesion(sessionName);
         }
     });
 
-    client.on('disconnected', (reason) => { 
+    client.on('disconnected', (reason) => {
         isClientReady = false;
-        console.log(`❌ [DISCONNECTED-1] Desconectado - Razón: ${reason}`); 
-        io.emit('status', '❌ Desconectado'); 
+        console.log(`\n❌ [DISCONNECTED-1] ========== DESCONEXIÓN ==========`);
+        console.log(`❌ [DISCONNECTED-2] Razón: "${reason}" | Sesión: ${sessionName}`);
+        console.log(`❌ [DISCONNECTED-3] Timestamp: ${new Date().toISOString()}`);
+        console.log(`❌ [DISCONNECTED-4] isManual: ${isManual} | isClientReady era: ${isClientReady}`);
+        io.emit('status', `❌ Desconectado (${reason})`);
+        if (qrMonitorInterval) {
+            clearInterval(qrMonitorInterval);
+            qrMonitorInterval = null;
+            console.log('🧹 [DISCONNECTED-5] Monitor de QR limpiado');
+        }
         if (reason === 'LOGOUT') {
-            console.log('🗑️ [DISCONNECTED-2] Borrando sesión por LOGOUT');
+            console.log('🗑️ [DISCONNECTED-6] Borrando sesión por LOGOUT');
             borrarSesion(sessionName);
         }
     });
-    
+
     client.on('loading_screen', (percent, message) => {
-        console.log(`⏳ [LOADING] ${percent}% - ${message}`);
+        console.log(`⏳ [LOADING-${String(percent).padStart(3,'0')}] ${percent}% - "${message}" | ${new Date().toISOString()}`);
+        io.emit('status', `⏳ Cargando WhatsApp ${percent}% - ${message} (${sessionName.toUpperCase()})`);
     });
-    
+
     client.on('authenticated', () => {
-        console.log('✅ [AUTHENTICATED] Autenticación exitosa');
+        autenticadoRecibido = true;
+        const tiempoDesdeQR = qrEscaneoTime ? Math.round((Date.now() - qrEscaneoTime) / 1000) : 'N/A';
+        console.log(`\n🔐 [AUTHENTICATED-1] ========== AUTENTICACIÓN EXITOSA ==========`);
+        console.log(`🔐 [AUTHENTICATED-2] Sesión: ${sessionName}`);
+        console.log(`🔐 [AUTHENTICATED-3] Tiempo desde escaneo QR: ${tiempoDesdeQR}s`);
+        console.log(`🔐 [AUTHENTICATED-4] Timestamp: ${new Date().toISOString()}`);
+        console.log(`🔐 [AUTHENTICATED-5] Ahora WhatsApp cargará la pantalla (evento 'loading_screen') y luego 'ready'`);
+        const memA = process.memoryUsage();
+        console.log(`📊 [AUTHENTICATED-6] RAM: heap ${Math.round(memA.heapUsed/1024/1024)}/${Math.round(memA.heapTotal/1024/1024)}MB, RSS ${Math.round(memA.rss/1024/1024)}MB`);
+        io.emit('status', `🔐 Autenticado! Cargando WhatsApp Web... (${sessionName.toUpperCase()})`);
+    });
+
+    client.on('change_state', (state) => {
+        console.log(`🔄 [STATE-CHANGE] Estado de conexión → "${state}" | ${new Date().toISOString()}`);
+        io.emit('status', `🔄 Estado interno: ${state} (${sessionName.toUpperCase()})`);
     });
     
     console.log('✅ [EVENTS-2] Event handlers registrados');
@@ -866,14 +975,34 @@ server.listen(PORT, '0.0.0.0', () => {
     setInterval(() => {
         const turnoDebido = getTurnoActual();
         console.log(`🔍 [TURNO-CHECK] Verificando turno - Actual: ${activeSessionName}, Debido: ${turnoDebido}`);
-        
+
         if (activeSessionName && activeSessionName !== turnoDebido) {
             console.log(`🔄 [TURNO-CHANGE] Cambio de turno detectado - reiniciando proceso`);
-            process.exit(0); 
+            process.exit(0);
         }
-    }, 60000); 
-    
-    console.log('✅ [INIT-5] Inicialización completa\n');
+    }, 60000);
+
+    console.log('💓 [INIT-5] Configurando heartbeat de RAM (cada 30s)...');
+    setInterval(() => {
+        const mem = process.memoryUsage();
+        console.log(`💓 [HEARTBEAT] RAM: heap ${Math.round(mem.heapUsed/1024/1024)}/${Math.round(mem.heapTotal/1024/1024)}MB | RSS ${Math.round(mem.rss/1024/1024)}MB | session: ${activeSessionName || 'NINGUNA'} | ready: ${isClientReady} | pausado: ${isPaused} | cola: ${pdfQueue.length}PDF + ${normalQueue.length}Normal`);
+    }, 30000);
+
+    console.log('✅ [INIT-6] Inicialización completa\n');
+});
+
+// --- CAPTURA DE ERRORES GLOBALES NO MANEJADOS ---
+process.on('uncaughtException', (err) => {
+    console.error(`\n💀 [UNCAUGHT-EXCEPTION] ========== ERROR NO CAPTURADO ==========`);
+    console.error(`💀 [UNCAUGHT-EXCEPTION] Mensaje: ${err.message}`);
+    console.error(`💀 [UNCAUGHT-EXCEPTION] Stack: ${err.stack}`);
+    console.error(`💀 [UNCAUGHT-EXCEPTION] Timestamp: ${new Date().toISOString()}`);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error(`\n💀 [UNHANDLED-REJECTION] ========== PROMESA SIN MANEJAR ==========`);
+    console.error(`💀 [UNHANDLED-REJECTION] Razón: ${reason}`);
+    console.error(`💀 [UNHANDLED-REJECTION] Timestamp: ${new Date().toISOString()}`);
 });
 
 console.log('✅ [FINAL] Script cargado completamente - esperando server.listen()...');
