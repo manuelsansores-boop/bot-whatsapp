@@ -54,6 +54,28 @@ const ffmpegPath = require('ffmpeg-static');
 process.env.FFMPEG_PATH = ffmpegPath;
 console.log(`✅ [FFMPEG-2] FFMPEG path: ${ffmpegPath}`);
 
+// --- CARGA DE ASSETS DEL TICKET (logo + banners laterales) ---
+// Se leen UNA sola vez al arrancar y se guardan como data URI base64.
+// Si falta alguna imagen, queda en null y el ticket simplemente la omite (no rompe).
+function cargarAssetTicket(nombreArchivo) {
+    try {
+        const ruta = path.join(__dirname, 'assets', 'ticket', nombreArchivo);
+        if (fs.existsSync(ruta)) {
+            const b64 = fs.readFileSync(ruta).toString('base64');
+            console.log(`✅ [ASSET] ${nombreArchivo} cargado (${Math.round(b64.length / 1024)} KB base64)`);
+            return `data:image/png;base64,${b64}`;
+        }
+        console.log(`⚠️ [ASSET] No se encontró ${nombreArchivo} en assets/ticket/`);
+        return null;
+    } catch (e) {
+        console.error(`❌ [ASSET] Error cargando ${nombreArchivo}:`, e.message);
+        return null;
+    }
+}
+const ASSET_LOGO        = cargarAssetTicket('logo.png');
+const ASSET_BANNER_IZQ  = cargarAssetTicket('banner-izquierdo.png');
+const ASSET_BANNER_DER  = cargarAssetTicket('banner-derecho.png');
+
 console.log('🌐 [EXPRESS-1] Creando servidor Express...');
 const app = express();
 const server = http.createServer(app);
@@ -163,8 +185,14 @@ const authMiddleware = (req, res, next) => {
     next();
 };
 
-// --- UTILIDADES --- 
+// --- UTILIDADES ---
 const getRandomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1) + min);
+
+// Formatea un valor (número o string) como dinero: 4296.46 -> "$4,296.46"
+const fmtMoney = (v) => {
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')) || 0;
+    return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
 
 const checkOfficeHours = () => {
     const hora = moment().tz('America/Mexico_City').hour();
@@ -541,58 +569,97 @@ async function generarYEnviarPDF(item, clientInstance) {
         console.log(`📄 [PDF-1] Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
         
+        // Fecha en formato DD/MM/YY (si se puede parsear), si no, tal cual viene.
+        const _mFecha = moment(datos_ticket.fecha, ['YYYY-MM-DD HH:mm:ss', 'YYYY-MM-DD', moment.ISO_8601], true);
+        const fechaFmt = _mFecha.isValid() ? _mFecha.format('DD/MM/YY') : (datos_ticket.fecha || '');
+
+        const filasProductos = (datos_ticket.productos || []).map(p => `
+            <tr>
+                <td class="c-cant">${p.cantidad} ${p.unidad || ''}</td>
+                <td class="c-desc">${p.descripcion || ''}</td>
+                <td class="c-num">${fmtMoney(p.precio)}</td>
+                <td class="c-num">${fmtMoney((parseFloat(p.cantidad) || 0) * (parseFloat(p.precio) || 0))}</td>
+            </tr>`).join('');
+
+        // Iconitos (inline SVG, no requieren archivos)
+        const ICON_WA = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#25D366"><path d="M12 2a10 10 0 0 0-8.6 15l-1.4 5 5.1-1.3A10 10 0 1 0 12 2zm4.4 12c-.2-.1-1.4-.7-1.6-.8s-.4-.1-.5.1-.6.8-.7 1-.3.2-.5.1a6.5 6.5 0 0 1-1.9-1.2 7.2 7.2 0 0 1-1.3-1.7c-.1-.2 0-.4.1-.5l.4-.4.2-.3v-.4c0-.1-.5-1.3-.7-1.7s-.4-.4-.5-.4h-.5a.9.9 0 0 0-.7.3 2.8 2.8 0 0 0-.9 2.1 4.9 4.9 0 0 0 1 2.6 11 11 0 0 0 4.2 3.7c1 .4 1.7.6 2.3.5.6-.1 1.4-.6 1.6-1.1s.2-1 .1-1.1z"/></svg>`;
+        const ICON_FB = `<svg width="12" height="12" viewBox="0 0 24 24" fill="#1877F2"><path d="M22 12a10 10 0 1 0-11.6 9.9v-7H7.9V12h2.5V9.8c0-2.5 1.5-3.8 3.7-3.8 1.1 0 2.2.2 2.2.2v2.4h-1.2c-1.2 0-1.6.8-1.6 1.5V12h2.7l-.4 2.9h-2.3v7A10 10 0 0 0 22 12z"/></svg>`;
+        const ICON_IG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#E1306C" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1.2" fill="#E1306C" stroke="none"/></svg>`;
+
         const htmlContent = `
-        <html>
-        <head>
-            <style>
-                body{font-family:Arial,sans-serif;font-size:12px;padding:20px}
-                .ticket{width:100%;max-width:400px;margin:0 auto;border:1px solid #999;padding:10px}
-                .header,.footer{text-align:center;margin-bottom:10px;border-bottom:2px solid #000;padding-bottom:10px}
-                .bold{font-weight:bold}
-                table{width:100%;border-collapse:collapse;margin-top:10px}
-                th,td{text-align:left;padding:5px;border-bottom:1px solid #ccc;font-size:11px}
-                .totals{margin-top:15px;text-align:right}
-                .evidencia{margin-top:20px;text-align:center;border-top:2px dashed #000;padding-top:10px}
-                img{max-width:100%}
-            </style>
-        </head>
+        <!DOCTYPE html>
+        <html><head><meta charset="utf-8"><style>
+            * { margin:0; padding:0; box-sizing:border-box; }
+            @page { size: A4; margin: 0; }
+            body { font-family: Arial, Helvetica, sans-serif; color:#222; -webkit-print-color-adjust:exact; }
+            .page { display:flex; width:210mm; min-height:297mm; background:#fff; }
+            .side { width:46mm; flex-shrink:0; }
+            .side img { width:100%; display:block; }
+            .center { flex:1; padding:7mm 6mm; }
+            .topbar { display:flex; justify-content:space-between; align-items:center; font-size:8px; color:#8a8a8a; margin-bottom:8px; }
+            .topbar .ic { display:inline-flex; vertical-align:middle; align-items:center; }
+            .topbar svg { vertical-align:middle; margin:0 3px; }
+            .phone { color:#25D366; font-weight:bold; font-size:11px; margin-left:2px; }
+            .logo-wrap { text-align:center; margin:4px 0 6px; }
+            .logo-wrap img { width:62%; max-width:230px; }
+            .empresa { text-align:center; font-weight:bold; font-size:11px; line-height:1.35; }
+            .rfc { text-align:center; font-weight:bold; font-size:10px; margin-bottom:6px; }
+            .sucursal { text-align:center; margin:6px 0 12px; }
+            .sucursal span { display:inline-block; border:1.5px solid #222; border-radius:14px; padding:4px 16px; font-weight:bold; font-size:11px; }
+            .meta { display:flex; justify-content:space-between; font-size:10px; margin-bottom:8px; }
+            .meta .lbl { color:#e2231a; font-weight:bold; }
+            .datos { font-size:11px; line-height:1.6; margin-bottom:8px; }
+            .detalle-tit { text-align:center; font-weight:bold; font-size:12px; margin:10px 0 6px; }
+            table { width:100%; border-collapse:collapse; }
+            thead th { color:#e2231a; font-weight:bold; font-size:10px; text-align:left; border-bottom:1.5px solid #ddd; padding:5px 4px; }
+            thead th.c-num { text-align:right; }
+            tbody td { font-size:10px; padding:6px 4px; border-bottom:1px solid #eee; vertical-align:top; }
+            .c-num { text-align:right; white-space:nowrap; }
+            .c-cant { white-space:nowrap; }
+            .totals { margin-top:12px; text-align:right; font-size:11px; line-height:1.9; }
+            .totals .total { font-weight:bold; font-size:15px; margin-top:4px; }
+            .evidencia { margin-top:22px; border-top:1.5px solid #222; padding-top:10px; text-align:center; }
+            .evidencia .et { font-weight:bold; font-size:12px; letter-spacing:0.5px; }
+            .evidencia img { max-width:80%; margin-top:10px; border-radius:4px; }
+        </style></head>
         <body>
-            <div class="ticket">
-                <div class="header">
-                    <p class="bold" style="font-size:1.2em">FERROLÁMINAS RICHAUD SA DE CV</p>
-                    <p>FRI90092879A</p>
-                    <p>Sucursal: ${datos_ticket.sucursal || 'Matriz'}</p>
-                    <p>Fecha: ${datos_ticket.fecha}</p>
-                    <p class="bold" style="font-size:1.2em">Ticket: ${datos_ticket.folio}</p>
+          <div class="page">
+            ${ASSET_BANNER_IZQ ? `<div class="side"><img src="${ASSET_BANNER_IZQ}"></div>` : ''}
+            <div class="center">
+                <div class="topbar">
+                    <span class="ic">Contáctanos al: ${ICON_WA}<span class="phone">981 118 1870</span></span>
+                    <span class="ic">Síguenos en Redes sociales ${ICON_IG} ${ICON_FB}</span>
                 </div>
-                <div>
-                    <p><span class="bold">Cliente:</span> ${datos_ticket.cliente}</p>
-                    <p><span class="bold">Dirección:</span> ${datos_ticket.direccion}</p>
+                <div class="logo-wrap">${ASSET_LOGO ? `<img src="${ASSET_LOGO}">` : '<h2 style="color:#e2231a;font-style:italic">Ferroláminas</h2>'}</div>
+                <div class="empresa">Ferroláminas Richaud S.A. de C.V.</div>
+                <div class="rfc">FRI90092879A</div>
+                <div class="sucursal"><span>SUCURSAL: ${(datos_ticket.sucursal || 'MATRIZ').toUpperCase()}</span></div>
+                <div class="meta">
+                    <span><span class="lbl">FECHA:</span> ${fechaFmt}</span>
+                    <span><span class="lbl">TICKET:</span> ${datos_ticket.folio}</span>
                 </div>
-                <div style="text-align:center;margin:10px 0;font-weight:bold">DETALLE DE COMPRA</div>
+                <div class="datos">
+                    <div><b>Cliente:</b> ${datos_ticket.cliente}</div>
+                    <div><b>Dirección:</b> ${datos_ticket.direccion}</div>
+                </div>
+                <div class="detalle-tit">DETALLE DE COMPRA</div>
                 <table>
-                    <thead>
-                        <tr><th>Cant</th><th>Desc</th><th>Precio</th><th>Total</th></tr>
-                    </thead>
-                    <tbody>
-                        ${datos_ticket.productos.map(p => `
-                            <tr>
-                                <td>${p.cantidad} ${p.unidad}</td>
-                                <td>${p.descripcion}</td>
-                                <td>$${parseFloat(p.precio).toFixed(2)}</td>
-                                <td>$${(p.cantidad*p.precio).toFixed(2)}</td>
-                            </tr>`).join('')}
-                    </tbody>
+                    <thead><tr><th>Cant.</th><th>Desc.</th><th class="c-num">Precio</th><th class="c-num">Total</th></tr></thead>
+                    <tbody>${filasProductos}</tbody>
                 </table>
                 <div class="totals">
-                    <p>Subtotal: $${datos_ticket.subtotal}</p>
-                    <p>Impuestos: $${datos_ticket.impuestos}</p>
-                    <p class="bold" style="font-size:1.2em">TOTAL: $${datos_ticket.total}</p>
+                    <div>Subtotal: ${fmtMoney(datos_ticket.subtotal)}</div>
+                    <div>Impuestos: ${fmtMoney(datos_ticket.impuestos)}</div>
+                    <div class="total">TOTAL: ${fmtMoney(datos_ticket.total)}</div>
                 </div>
-                ${foto_evidencia ? `<div class="evidencia"><p class="bold">📸 EVIDENCIA DE ENTREGA</p><img src="${foto_evidencia}"/></div>`:''}
+                <div class="evidencia">
+                    <div class="et">EVIDENCIA DE ENTREGA</div>
+                    ${foto_evidencia ? `<img src="${foto_evidencia}"/>` : ''}
+                </div>
             </div>
-        </body>
-        </html>`;
+            ${ASSET_BANNER_DER ? `<div class="side"><img src="${ASSET_BANNER_DER}"></div>` : ''}
+          </div>
+        </body></html>`;
 
         console.log('🌐 [PDF-2] Lanzando navegador para PDF...');
         const browser = await puppeteer.launch({ 
@@ -842,15 +909,55 @@ app.post('/enviar-ticket-pdf', authMiddleware, (req, res) => {
         console.log('⏰ [ROUTE] Fuera de horario');
         return res.status(400).json({ error: 'Fuera de horario laboral' });
     }
-    pdfQueue.push({ 
-        type: 'pdf', 
-        ...req.body, 
-        pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia }, 
-        resolve: () => {} 
+    pdfQueue.push({
+        type: 'pdf',
+        ...req.body,
+        pdfData: { datos_ticket: req.body.datos_ticket, foto_evidencia: req.body.foto_evidencia },
+        resolve: () => {}
     });
-    saveQueue(); 
+    saveQueue();
     processQueue();
     res.json({ success: true, posicion: pdfQueue.length });
+});
+
+// --- RUTA DE PRUEBA: genera y envía el ticket AL INSTANTE ---
+// Ignora el horario laboral y NO usa la cola: sirve solo para probar el diseño.
+// Recibe el MISMO payload que /enviar-ticket-pdf (numero, mensaje, foto_evidencia, datos_ticket).
+app.post('/probar-ticket', authMiddleware, async (req, res) => {
+    console.log('🧪 [ROUTE] POST /probar-ticket (PRUEBA - ignora horario y cola)');
+
+    if (!isClientReady || !client) {
+        console.log('⚠️ [PRUEBA] Cliente no está conectado, no se puede enviar la prueba');
+        return res.status(503).json({ error: 'El bot no está conectado a WhatsApp en este momento.' });
+    }
+
+    if (!req.body || !req.body.numero || !req.body.datos_ticket) {
+        return res.status(400).json({ error: 'Faltan datos: se requieren "numero" y "datos_ticket".' });
+    }
+
+    const item = {
+        type: 'pdf',
+        numero: req.body.numero,
+        mensaje: req.body.mensaje,
+        pdfData: {
+            datos_ticket: req.body.datos_ticket,
+            foto_evidencia: req.body.foto_evidencia
+        }
+    };
+
+    try {
+        console.log(`🧪 [PRUEBA] Generando y enviando ticket de prueba INMEDIATO a ${item.numero}...`);
+        const ok = await generarYEnviarPDF(item, client);
+        if (ok) {
+            console.log(`✅ [PRUEBA] Ticket de prueba enviado a ${item.numero}`);
+            return res.json({ success: true, message: `Ticket de prueba enviado a ${item.numero}` });
+        }
+        console.log('❌ [PRUEBA] generarYEnviarPDF devolvió false');
+        return res.status(500).json({ error: 'Falló la generación/envío del PDF de prueba (ver logs).' });
+    } catch (e) {
+        console.error('❌ [PRUEBA] Error:', e.message);
+        return res.status(500).json({ error: e.message });
+    }
 });
 
 app.get('/cola-pendientes', authMiddleware, (req, res) => {
