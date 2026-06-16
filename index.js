@@ -592,20 +592,26 @@ async function generarYEnviarPDF(item, clientInstance) {
             * { margin:0; padding:0; box-sizing:border-box; }
             @page { size: A4; margin: 0; }
             body { font-family: Arial, Helvetica, sans-serif; color:#222; -webkit-print-color-adjust:exact; }
-            .page { display:flex; width:210mm; min-height:297mm; background:#fff; }
-            .side { width:46mm; flex-shrink:0; }
-            .side img { width:100%; display:block; }
-            .center { flex:1; padding:7mm 6mm; }
-            .topbar { display:flex; justify-content:space-between; align-items:center; font-size:8px; color:#8a8a8a; margin-bottom:8px; }
+
+            /* ===== ENCABEZADO: a todo lo ancho, arriba ===== */
+            .cabecera { padding:7mm 12mm 3mm; text-align:center; }
+            .topbar { display:flex; justify-content:space-between; align-items:center; font-size:8px; color:#8a8a8a; margin-bottom:6px; }
             .topbar .ic { display:inline-flex; vertical-align:middle; align-items:center; }
             .topbar svg { vertical-align:middle; margin:0 3px; }
             .phone { color:#25D366; font-weight:bold; font-size:11px; margin-left:2px; }
-            .logo-wrap { text-align:center; margin:4px 0 6px; }
-            .logo-wrap img { width:62%; max-width:230px; }
-            .empresa { text-align:center; font-weight:bold; font-size:11px; line-height:1.35; }
-            .rfc { text-align:center; font-weight:bold; font-size:10px; margin-bottom:6px; }
-            .sucursal { text-align:center; margin:6px 0 12px; }
+            .logo-wrap { margin:4px 0 6px; }
+            .logo-wrap img { width:42%; max-width:240px; }
+            .empresa { font-weight:bold; font-size:11px; line-height:1.35; }
+            .rfc { font-weight:bold; font-size:10px; margin-bottom:6px; }
+            .sucursal { margin:6px 0 2px; }
             .sucursal span { display:inline-block; border:1.5px solid #222; border-radius:14px; padding:4px 16px; font-weight:bold; font-size:11px; }
+
+            /* ===== CUERPO: 3 columnas (banner | ticket | banner) ===== */
+            .cuerpo { display:flex; align-items:flex-start; width:210mm; }
+            .side { width:46mm; flex-shrink:0; }
+            .side img { width:100%; display:block; }
+            .centro { flex:1; padding:4mm 6mm 6mm; }
+
             .meta { display:flex; justify-content:space-between; font-size:10px; margin-bottom:8px; }
             .meta .lbl { color:#e2231a; font-weight:bold; }
             .datos { font-size:11px; line-height:1.6; margin-bottom:8px; }
@@ -618,22 +624,24 @@ async function generarYEnviarPDF(item, clientInstance) {
             .c-cant { white-space:nowrap; }
             .totals { margin-top:12px; text-align:right; font-size:11px; line-height:1.9; }
             .totals .total { font-weight:bold; font-size:15px; margin-top:4px; }
-            .evidencia { margin-top:22px; border-top:1.5px solid #222; padding-top:10px; text-align:center; }
+            .evidencia { margin-top:20px; border-top:1.5px solid #222; padding-top:10px; text-align:center; }
             .evidencia .et { font-weight:bold; font-size:12px; letter-spacing:0.5px; }
-            .evidencia img { max-width:80%; margin-top:10px; border-radius:4px; }
+            .evidencia img { max-width:78%; max-height:90mm; margin-top:10px; border-radius:4px; }
         </style></head>
         <body>
-          <div class="page">
+          <div class="cabecera">
+            <div class="topbar">
+                <span class="ic">Contáctanos al: ${ICON_WA}<span class="phone">981 118 1870</span></span>
+                <span class="ic">Síguenos en Redes sociales ${ICON_IG} ${ICON_FB}</span>
+            </div>
+            <div class="logo-wrap">${ASSET_LOGO ? `<img src="${ASSET_LOGO}">` : '<h2 style="color:#e2231a;font-style:italic">Ferroláminas</h2>'}</div>
+            <div class="empresa">Ferroláminas Richaud S.A. de C.V.</div>
+            <div class="rfc">FRI90092879A</div>
+            <div class="sucursal"><span>SUCURSAL: ${(datos_ticket.sucursal || 'MATRIZ').toUpperCase()}</span></div>
+          </div>
+          <div class="cuerpo">
             ${ASSET_BANNER_IZQ ? `<div class="side"><img src="${ASSET_BANNER_IZQ}"></div>` : ''}
-            <div class="center">
-                <div class="topbar">
-                    <span class="ic">Contáctanos al: ${ICON_WA}<span class="phone">981 118 1870</span></span>
-                    <span class="ic">Síguenos en Redes sociales ${ICON_IG} ${ICON_FB}</span>
-                </div>
-                <div class="logo-wrap">${ASSET_LOGO ? `<img src="${ASSET_LOGO}">` : '<h2 style="color:#e2231a;font-style:italic">Ferroláminas</h2>'}</div>
-                <div class="empresa">Ferroláminas Richaud S.A. de C.V.</div>
-                <div class="rfc">FRI90092879A</div>
-                <div class="sucursal"><span>SUCURSAL: ${(datos_ticket.sucursal || 'MATRIZ').toUpperCase()}</span></div>
+            <div class="centro">
                 <div class="meta">
                     <span><span class="lbl">FECHA:</span> ${fechaFmt}</span>
                     <span><span class="lbl">TICKET:</span> ${datos_ticket.folio}</span>
@@ -945,19 +953,14 @@ app.post('/probar-ticket', authMiddleware, async (req, res) => {
         }
     };
 
-    try {
-        console.log(`🧪 [PRUEBA] Generando y enviando ticket de prueba INMEDIATO a ${item.numero}...`);
-        const ok = await generarYEnviarPDF(item, client);
-        if (ok) {
-            console.log(`✅ [PRUEBA] Ticket de prueba enviado a ${item.numero}`);
-            return res.json({ success: true, message: `Ticket de prueba enviado a ${item.numero}` });
-        }
-        console.log('❌ [PRUEBA] generarYEnviarPDF devolvió false');
-        return res.status(500).json({ error: 'Falló la generación/envío del PDF de prueba (ver logs).' });
-    } catch (e) {
-        console.error('❌ [PRUEBA] Error:', e.message);
-        return res.status(500).json({ error: e.message });
-    }
+    // Respondemos de INMEDIATO para que quien llama (la Lambda) no se quede esperando
+    // a que se genere el PDF — eso tarda y causaba el timeout. El envío sigue en segundo plano.
+    console.log(`🧪 [PRUEBA] Aceptado. Generando y enviando en SEGUNDO PLANO a ${item.numero}...`);
+    res.json({ success: true, message: `Prueba aceptada, enviando a ${item.numero} (revisa WhatsApp en unos segundos)` });
+
+    generarYEnviarPDF(item, client)
+        .then(ok => console.log(ok ? `✅ [PRUEBA] Ticket de prueba enviado a ${item.numero}` : '❌ [PRUEBA] generarYEnviarPDF devolvió false'))
+        .catch(e => console.error('❌ [PRUEBA] Error en segundo plano:', e.message));
 });
 
 app.get('/cola-pendientes', authMiddleware, (req, res) => {
