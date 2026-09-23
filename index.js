@@ -1,10 +1,38 @@
+const fs = require('fs');
+const path = require('path');
+
+// ▼▼▼ PARCHE whatsapp-web.js: ENVÍO DE ARCHIVOS (PDF / imágenes) ▼▼▼
+// Desde la actualización de WhatsApp Web del 17-sep-2026, todo envío de archivos falla con
+// "Data passed to getter must include an id property (it's how we memoize)". El arreglo oficial
+// (https://github.com/wwebjs/whatsapp-web.js/pull/201923) aún no se publica: agrega
+// `delete message.__x_id;` justo después de armar el mensaje en window.WWebJS.sendMessage.
+// Se aplica ANTES de cargar la librería. Si la librería ya trae el arreglo, no hace nada.
+function parchearEnvioDeArchivos() {
+    try {
+        const archivo = path.join(path.dirname(require.resolve('whatsapp-web.js')), 'src', 'util', 'Injected', 'Utils.js');
+        const codigo = fs.readFileSync(archivo, 'utf8');
+        if (codigo.includes('delete message.__x_id')) {
+            console.log('✅ [PATCH] whatsapp-web.js ya tiene el arreglo de envío de archivos');
+            return;
+        }
+        const bloqueMensaje = /(const message = \{[\s\S]*?\n\s*\};)/;
+        if (!bloqueMensaje.test(codigo)) {
+            console.error('❌ [PATCH] No se encontró dónde aplicar el arreglo: el envío de PDFs puede seguir fallando');
+            return;
+        }
+        fs.writeFileSync(archivo, codigo.replace(bloqueMensaje, '$1\n        delete message.__x_id;'));
+        console.log('✅ [PATCH] Arreglo de envío de archivos aplicado a whatsapp-web.js');
+    } catch (e) {
+        console.error('❌ [PATCH] Error aplicando el arreglo de envío de archivos:', e.message);
+    }
+}
+parchearEnvioDeArchivos();
+
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
-const fs = require('fs');
-const path = require('path');
-const moment = require('moment-timezone'); 
+const moment = require('moment-timezone');
 const puppeteer = require('puppeteer'); 
 const { execSync } = require('child_process');
 
@@ -282,7 +310,12 @@ async function startSession(sessionName, isManual = false) {
     let qrEscaneoTime = null;
     let qrMonitorInterval = null;
     let qrContador = 0;
-    let autenticadoRecibido = false; 
+    let autenticadoRecibido = false;
+    // Variables para monitor POST-autenticación (camino hacia 'ready')
+    let readyMonitorInterval = null;
+    let loadingScreenVisto = false;
+    let ultimoLoadingPercent = 0;
+    let pageErrorListenersPuestos = false;
 
     if (client) { 
         console.log('⚠️ [SESSION-4] Cliente existente detectado, destruyendo...');
@@ -447,10 +480,14 @@ async function startSession(sessionName, isManual = false) {
 
     client.on('ready', () => {
         isClientReady = true;
-        // Limpiar monitor de QR si aún corría
+        // Limpiar monitores si aún corrían
         if (qrMonitorInterval) {
             clearInterval(qrMonitorInterval);
             qrMonitorInterval = null;
+        }
+        if (readyMonitorInterval) {
+            clearInterval(readyMonitorInterval);
+            readyMonitorInterval = null;
         }
         const tiempoDesdeQR = qrEscaneoTime ? Math.round((Date.now() - qrEscaneoTime) / 1000) : 'N/A';
         console.log(`\n✅✅✅ [READY-1] ========== ${sessionName.toUpperCase()} CONECTADO Y LISTO ✅✅✅`);
@@ -485,6 +522,7 @@ async function startSession(sessionName, isManual = false) {
         console.error(`   → Credenciales de la cuenta inválidas`);
         io.emit('status', '⛔ FALLO DE AUTENTICACIÓN - ver logs');
         if (qrMonitorInterval) { clearInterval(qrMonitorInterval); qrMonitorInterval = null; }
+        if (readyMonitorInterval) { clearInterval(readyMonitorInterval); readyMonitorInterval = null; }
         try {
             await client.destroy();
             console.log('✅ [AUTH-FAILURE-7] Cliente destruido tras fallo');
@@ -510,6 +548,11 @@ async function startSession(sessionName, isManual = false) {
             qrMonitorInterval = null;
             console.log('🧹 [DISCONNECTED-5] Monitor de QR limpiado');
         }
+        if (readyMonitorInterval) {
+            clearInterval(readyMonitorInterval);
+            readyMonitorInterval = null;
+            console.log('🧹 [DISCONNECTED-5b] Monitor post-autenticación limpiado');
+        }
         if (reason === 'LOGOUT') {
             console.log('🗑️ [DISCONNECTED-6] Borrando sesión por LOGOUT');
             borrarSesion(sessionName);
@@ -517,6 +560,8 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('loading_screen', (percent, message) => {
+        loadingScreenVisto = true;
+        ultimoLoadingPercent = percent;
         console.log(`⏳ [LOADING-${String(percent).padStart(3,'0')}] ${percent}% - "${message}" | ${new Date().toISOString()}`);
         io.emit('status', `⏳ Cargando WhatsApp ${percent}% - ${message} (${sessionName.toUpperCase()})`);
     });
@@ -532,6 +577,59 @@ async function startSession(sessionName, isManual = false) {
         const memA = process.memoryUsage();
         console.log(`📊 [AUTHENTICATED-6] RAM: heap ${Math.round(memA.heapUsed/1024/1024)}/${Math.round(memA.heapTotal/1024/1024)}MB, RSS ${Math.round(memA.rss/1024/1024)}MB`);
         io.emit('status', `🔐 Autenticado! Cargando WhatsApp Web... (${sessionName.toUpperCase()})`);
+
+        // ===== READY-MONITOR: vigila el camino 'authenticated' -> 'ready' y dice el PORQUÉ si se atora =====
+        // 1) Engancha la vigilancia de la PÁGINA de WhatsApp Web (los errores JS revelan incompatibilidad de versión)
+        try {
+            if (client && client.pupPage && !pageErrorListenersPuestos) {
+                pageErrorListenersPuestos = true;
+                client.pupPage.on('pageerror', err => console.error(`💥 [WEB-PAGEERROR] Error JS dentro de WhatsApp Web: ${err.message}`));
+                client.pupPage.on('error', err => console.error(`💥 [WEB-CRASH] La página de WhatsApp Web crasheó: ${err.message}`));
+                client.pupPage.on('console', msg => {
+                    const t = msg.type();
+                    if (t === 'error' || t === 'warning') console.log(`🌐 [WEB-CONSOLE-${t}] ${msg.text().slice(0, 200)}`);
+                });
+                console.log('👁️ [READY-MONITOR] Vigilancia de la página de WhatsApp Web activada');
+            }
+        } catch (e) {
+            console.log(`⚠️ [READY-MONITOR] No se pudo enganchar la vigilancia de la página: ${e.message}`);
+        }
+
+        // 2) Cada 10s reporta el estado interno y QUÉ está mostrando la pantalla por dentro
+        let readyMonitorSegundos = 0;
+        if (readyMonitorInterval) clearInterval(readyMonitorInterval);
+        readyMonitorInterval = setInterval(async () => {
+            readyMonitorSegundos += 10;
+            if (isClientReady) { clearInterval(readyMonitorInterval); readyMonitorInterval = null; return; }
+
+            let estado = 'desconocido';
+            try { estado = await client.getState(); } catch (e) { estado = `error(${e.message})`; }
+
+            let titulo = 'N/A';
+            let textoVisible = 'N/A';
+            try {
+                if (client && client.pupPage) {
+                    titulo = await client.pupPage.title();
+                    textoVisible = await client.pupPage.evaluate(() => (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 250));
+                }
+            } catch (e) { textoVisible = `no se pudo leer la página (${e.message})`; }
+
+            const memM = process.memoryUsage();
+            console.log(`⏳ [READY-MONITOR] +${readyMonitorSegundos}s esperando READY | estado: ${estado} | loading_screen: ${loadingScreenVisto ? 'SÍ (' + ultimoLoadingPercent + '%)' : 'NUNCA'} | título: "${titulo}" | RAM ${Math.round(memM.heapUsed/1024/1024)}MB`);
+            console.log(`🔎 [READY-MONITOR] La pantalla de WhatsApp dice: "${textoVisible}"`);
+
+            if (readyMonitorSegundos >= 120) {
+                console.log(`\n🚨 [READY-MONITOR] ===== ATORADO: AUTENTICÓ PERO NUNCA LLEGÓ A READY (${readyMonitorSegundos}s) =====`);
+                console.log(`🚨 [READY-MONITOR] Estado interno WhatsApp: ${estado}`);
+                console.log(`🚨 [READY-MONITOR] ¿Disparó loading_screen?: ${loadingScreenVisto ? 'SÍ, llegó a ' + ultimoLoadingPercent + '%' : 'NUNCA (ni siquiera empezó a cargar la pantalla)'}`);
+                console.log(`🚨 [READY-MONITOR] Título de la página: "${titulo}"`);
+                console.log(`🚨 [READY-MONITOR] La pantalla mostraba: "${textoVisible}"`);
+                console.log(`🚨 [READY-MONITOR] (Revisa arriba si hay líneas [WEB-PAGEERROR] o [WEB-CONSOLE-error] — ahí está el PORQUÉ real)`);
+                io.emit('status', `🚨 ATORADO tras autenticar (estado: ${estado}) - ver logs`);
+                clearInterval(readyMonitorInterval);
+                readyMonitorInterval = null;
+            }
+        }, 10000);
     });
 
     client.on('change_state', (state) => {
@@ -565,6 +663,7 @@ async function startSession(sessionName, isManual = false) {
 
 // --- GENERADOR DE PDF --- 
 async function generarYEnviarPDF(item, clientInstance) {
+    let browser = null;
     try {
         console.log(`📄 [PDF-1] Generando PDF para ${item.numero}...`);
         const { datos_ticket, foto_evidencia } = item.pdfData;
@@ -670,7 +769,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         </body></html>`;
 
         console.log('🌐 [PDF-2] Lanzando navegador para PDF...');
-        const browser = await puppeteer.launch({ 
+        browser = await puppeteer.launch({
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -710,6 +809,7 @@ async function generarYEnviarPDF(item, clientInstance) {
         console.log('✅ [PDF-10] PDF generado');
         
         await browser.close();
+        browser = null;
         console.log('✅ [PDF-11] Navegador cerrado');
 
         const b64 = Buffer.from(pdfBuffer).toString('base64');
@@ -728,6 +828,9 @@ async function generarYEnviarPDF(item, clientInstance) {
         console.error("❌ [PDF-ERROR] Error PDF:", e.message);
         console.error("📜 [PDF-ERROR] Stack:", e.stack);
         return false;
+    } finally {
+        // Si falló antes de cerrarlo, no dejar Chrome abierto gastando RAM (con los reintentos se acumularía)
+        if (browser) await browser.close().catch(() => {});
     }
 }
 
@@ -813,6 +916,8 @@ const processQueue = async () => {
         return;
     }
 
+    // 'enviado' | 'no-registrado' | 'fallido' — decide si el item sale de la cola o se reintenta
+    let resultado = 'fallido';
     try {
         let cleanNumber = item.numero.replace(/\D/g, '');
         if (cleanNumber.length === 10) cleanNumber = '52' + cleanNumber;
@@ -830,11 +935,13 @@ const processQueue = async () => {
         console.log(`✅ [SEND-4] Registro verificado: ${isRegistered}`);
         
         if (isRegistered) {
+            // El turno cuenta para el ratio 3:2 aunque el envío falle, para que una cola con errores no frene a la otra
             if (tipoSeleccionado === 'pdf') {
-                console.log('📄 [SEND-5] Generando y enviando PDF...');
-                await generarYEnviarPDF(item, client);
                 pdfEnCiclo++;
+                console.log('📄 [SEND-5] Generando y enviando PDF...');
+                if (await generarYEnviarPDF(item, client)) resultado = 'enviado';
             } else {
+                normalEnCiclo++;
                 if (item.mediaUrl) {
                     console.log(`🖼️ [SEND-5] Descargando media desde: ${item.mediaUrl}`);
                     const media = await MessageMedia.fromUrl(item.mediaUrl, { unsafeMime: true });
@@ -844,18 +951,21 @@ const processQueue = async () => {
                     console.log('📤 [SEND-5] Enviando mensaje de texto...');
                     await client.sendMessage(finalNumber, item.mensaje);
                 }
-                normalEnCiclo++;
+                resultado = 'enviado';
             }
-            mensajesEnRacha++; 
-            
+
             if (pdfEnCiclo >= 3 && normalEnCiclo >= 2) {
                 console.log('🔄 [SEND-7] Reseteando contadores de ciclo');
                 pdfEnCiclo = 0;
                 normalEnCiclo = 0;
             }
 
-            console.log(`✅ [SEND-8] Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+            if (resultado === 'enviado') {
+                mensajesEnRacha++;
+                console.log(`✅ [SEND-8] Enviado (Racha: ${mensajesEnRacha}/${limiteRachaActual}) (Ciclo: P:${pdfEnCiclo} N:${normalEnCiclo})`);
+            }
         } else {
+            resultado = 'no-registrado';
             console.log(`⚠️ [SEND-9] Número no registrado: ${finalNumber}`);
         }
     } catch (error) {
@@ -867,11 +977,21 @@ const processQueue = async () => {
             process.exit(1); 
         }
     } finally {
-        console.log(`🧹 [CLEANUP-1] Removiendo item de cola (tipo: ${tipoSeleccionado})`);
-        if (tipoSeleccionado === 'pdf') pdfQueue.shift(); 
-        else normalQueue.shift();
+        // Se quita por referencia, no con shift(): si lo borraron desde el panel mientras se enviaba, no se lleva otro
+        const cola = tipoSeleccionado === 'pdf' ? pdfQueue : normalQueue;
+        const pos = cola.indexOf(item);
+        if (pos !== -1) cola.splice(pos, 1);
 
-        saveQueue(); 
+        if (resultado === 'fallido' && pos !== -1) {
+            // No se pierde: vuelve al final de su cola y se reintenta más tarde
+            item.intentos = (item.intentos || 0) + 1;
+            cola.push(item);
+            console.log(`🔁 [RETRY] Falló el envío a ${item.numero} (intento #${item.intentos}). Se queda al final de la cola para reintentar`);
+        } else {
+            console.log(`🧹 [CLEANUP-1] Removiendo item de cola (tipo: ${tipoSeleccionado})`);
+        }
+
+        saveQueue();
         
         const shortPause = getRandomDelay(45000, 90000); 
         console.log(`⏱️ [CLEANUP-2] Esperando ${Math.round(shortPause/1000)}s antes del próximo mensaje...`);
