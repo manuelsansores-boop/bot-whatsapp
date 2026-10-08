@@ -43,6 +43,9 @@ console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString
 // al arrancar ("Failed to launch the browser process: Code: null"), así que se fija una versión que sí funciona.
 // Para cambiarla sin subir código: variable de entorno CHROME_VERSION en Render (ej. 154).
 const VERSION_CHROME = process.env.CHROME_VERSION || '154';
+// El "user agent" dice qué Chrome somos. Antes decía Chrome 122 (de 2024) y WhatsApp Web puede rechazar
+// navegadores "viejos", así que ahora dice la misma versión que se instala.
+const USER_AGENT = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${VERSION_CHROME.split('.')[0]}.0.0.0 Safari/537.36`;
 let RUTA_CHROME_DETECTADA = null;
 try {
     console.log(`🛠️ [CHROME-1] Asegurando instalación de Chrome ${VERSION_CHROME}...`);
@@ -379,7 +382,7 @@ async function startSession(sessionName, isManual = false) {
             '--disable-infobars',
             '--window-size=1920,1080',
             `--user-data-dir=./data/session-client-${sessionName}`,
-            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            `--user-agent=${USER_AGENT}`
         ]
     };
     
@@ -392,7 +395,10 @@ async function startSession(sessionName, isManual = false) {
 
     console.log('📱 [WHATSAPP-1] Creando cliente WhatsApp...');
     client = new Client({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent: USER_AGENT,
+        // Tiempo máximo para que cargue WhatsApp Web (default 30s). En Render a veces tarda más y fallaba con
+        // "Waiting failed: 30000ms exceeded" aunque iba a terminar de cargar.
+        authTimeoutMs: 180000,
         authStrategy: new LocalAuth({ 
             clientId: `client-${sessionName}`, 
             dataPath: './data' 
@@ -652,16 +658,32 @@ async function startSession(sessionName, isManual = false) {
         console.log('🚀 [INITIALIZE-1] Llamando client.initialize()...');
         await client.initialize(); 
         console.log('✅ [INITIALIZE-2] client.initialize() completado');
-    } catch (e) { 
-        console.error('❌ [INITIALIZE-ERROR] Error en initialize:', e.message);
-        console.error('📜 [INITIALIZE-ERROR] Stack:', e.stack);
-        
+    } catch (e) {
+        // whatsapp-web.js a veces lanza un texto (ej. 'auth timeout') en vez de un Error
+        const mensajeError = (e && e.message) || String(e);
+        console.error('❌ [INITIALIZE-ERROR] Error en initialize:', mensajeError);
+        console.error('📜 [INITIALIZE-ERROR] Stack:', e && e.stack);
+
         if (abortandoPorFaltaDeQR) {
             console.log('ℹ️ [INITIALIZE-3] Abortado por falta de QR - no reiniciar');
             return;
         }
-        
-        if(e.message.includes('Target closed')) {
+
+        io.emit('status', `❌ Error: no cargó WhatsApp Web (${sessionName.toUpperCase()}) - ver logs`);
+
+        // Diagnóstico: qué mostraba WhatsApp Web al fallar (ej. "actualiza tu navegador" o si seguía cargando)
+        try {
+            if (client && client.pupPage) {
+                const titulo = await client.pupPage.title();
+                const textoVisible = await client.pupPage.evaluate(() => (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 300));
+                console.error(`🔎 [INITIALIZE-DIAG] URL: ${client.pupPage.url()} | título: "${titulo}"`);
+                console.error(`🔎 [INITIALIZE-DIAG] La pantalla de WhatsApp decía: "${textoVisible}"`);
+            }
+        } catch (errDiag) {
+            console.error(`⚠️ [INITIALIZE-DIAG] No se pudo leer la página: ${errDiag.message}`);
+        }
+
+        if(mensajeError.includes('Target closed')) {
             console.log('⚠️ [INITIALIZE-4] Target closed - reiniciando en 5 segundos...');
             setTimeout(() => process.exit(1), 5000); 
         }
