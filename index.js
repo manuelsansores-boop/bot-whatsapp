@@ -38,28 +38,37 @@ const { execSync } = require('child_process');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
 
-// ▼▼▼ FIX INSTALACIÓN CHROME (MEJORADO: Busca la versión más reciente) ▼▼▼ 
+// ▼▼▼ FIX INSTALACIÓN CHROME (VERSIÓN FIJA) ▼▼▼
+// Antes se instalaba "chrome@stable" (siempre la más nueva). Chrome 155 (salió el 6-oct-2026) se cae
+// al arrancar ("Failed to launch the browser process: Code: null"), así que se fija una versión que sí funciona.
+// Para cambiarla sin subir código: variable de entorno CHROME_VERSION en Render (ej. 154).
+const VERSION_CHROME = process.env.CHROME_VERSION || '154';
 let RUTA_CHROME_DETECTADA = null;
 try {
-    console.log("🛠️ [CHROME-1] Asegurando instalación de Chrome...");
-    execSync("npx puppeteer browsers install chrome@stable", { stdio: 'inherit' });
+    console.log(`🛠️ [CHROME-1] Asegurando instalación de Chrome ${VERSION_CHROME}...`);
+    execSync(`npx puppeteer browsers install chrome@${VERSION_CHROME}`, { stdio: 'inherit' });
     console.log("✅ [CHROME-2] Comando de instalación ejecutado");
-    
+
     const cacheDir = path.join(process.cwd(), '.cache', 'chrome');
     console.log(`📁 [CHROME-3] Verificando directorio cache: ${cacheDir}`);
-    
+
     if (fs.existsSync(cacheDir)) {
         console.log(`✅ [CHROME-4] Directorio cache existe`);
-        const carpetas = fs.readdirSync(cacheDir).sort().reverse(); 
+        // Orden numérico de la más nueva a la más vieja (154.0.10 va antes que 154.0.9)
+        const carpetas = fs.readdirSync(cacheDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
         console.log(`📂 [CHROME-5] Carpetas encontradas: ${carpetas.join(', ')}`);
-        
-        for (const carpeta of carpetas) {
+
+        // Solo la versión fijada; si no se pudo instalar, se usa la que haya (como antes)
+        const fijadas = carpetas.filter(c => c === `linux-${VERSION_CHROME}` || c.startsWith(`linux-${VERSION_CHROME}.`));
+        if (fijadas.length === 0) console.log(`⚠️ [CHROME-5b] No se encontró Chrome ${VERSION_CHROME} en el cache, se usará la versión que haya`);
+
+        for (const carpeta of (fijadas.length ? fijadas : carpetas)) {
             const posibleRuta = path.join(cacheDir, carpeta, 'chrome-linux64', 'chrome');
             console.log(`🔍 [CHROME-6] Verificando ruta: ${posibleRuta}`);
-            
+
             if (fs.existsSync(posibleRuta)) {
                 RUTA_CHROME_DETECTADA = posibleRuta;
-                console.log(`✅ [CHROME-7] Chrome seleccionado (Versión más nueva): ${posibleRuta}`);
+                console.log(`✅ [CHROME-7] Chrome seleccionado: ${posibleRuta}`);
                 break;
             } else {
                 console.log(`❌ [CHROME-8] No existe: ${posibleRuta}`);
