@@ -33,7 +33,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const moment = require('moment-timezone');
-const puppeteer = require('puppeteer'); 
+const puppeteer = require('puppeteer');
+const QRCode = require('qrcode');
 const { execSync } = require('child_process');
 
 console.log('🚀 [INICIO] Script iniciado - timestamp:', new Date().toISOString());
@@ -141,9 +142,34 @@ app.set('view engine', 'ejs');
 console.log('✅ [MIDDLEWARE-2] Middleware configurado');
 
 // --- VARIABLES DE ESTADO --- 
-let client = null; 
-let activeSessionName = null; 
+let client = null;
+let activeSessionName = null;
 let isClientReady = false;
+
+// Último aviso real que se mandó al panel. Antes, al abrir la página solo se decía "ACTIVO" o "Cargando",
+// aunque el chip estuviera desconectado. Ahora se manda lo último que pasó de verdad.
+let ultimoStatus = '💤 Sin sesión activa. Pica "Forzar/Escanear" del chip que toca.';
+
+function emitStatus(msg) {
+    ultimoStatus = msg;
+    io.emit('status', msg);
+}
+
+function statusActual() {
+    if (isClientReady && activeSessionName && !isPaused) return `✅ ACTIVO: ${activeSessionName.toUpperCase()}`;
+    return ultimoStatus;
+}
+
+// Evita que un doble clic en "Forzar/Escanear" mate el Chrome que está a medio vincular.
+// Mientras un chip arranca (hasta que conecta, falla o se desconecta) no se deja arrancar el MISMO chip otra vez.
+// Por si algo se atora, el candado se vence solo a los 3 minutos.
+const ARRANQUE_MAX_MS = 3 * 60 * 1000;
+let arranque = null; // { sessionName, desde, id }
+let contadorArranques = 0;
+
+function arranqueEnCurso(sessionName) {
+    return !!arranque && arranque.sessionName === sessionName && (Date.now() - arranque.desde) < ARRANQUE_MAX_MS;
+}
 
 // --- NUEVA ESTRUCTURA DE CUBETAS (RATIO 3:2) ---
 let pdfQueue = [];
@@ -317,6 +343,14 @@ async function startSession(sessionName, isManual = false) {
     const mem0 = process.memoryUsage();
     console.log(`📊 [SESSION-START-4] RAM inicial: heap ${Math.round(mem0.heapUsed/1024/1024)}/${Math.round(mem0.heapTotal/1024/1024)}MB, RSS ${Math.round(mem0.rss/1024/1024)}MB`);
 
+    // Candado contra doble clic (se pone antes de cualquier espera para que el 2do clic ya lo vea)
+    const idArranque = ++contadorArranques;
+    arranque = { sessionName, desde: Date.now(), id: idArranque };
+    const terminarArranque = () => { if (arranque && arranque.id === idArranque) arranque = null; };
+
+    const letraChip = sessionName.split('-')[1].toUpperCase(); // 'chip-b' -> 'B'
+    let cerrandoPorLogout = false;
+
     let abortandoPorFaltaDeQR = false;
     // Variables para monitor de QR
     let qrEscaneoTime = null;
@@ -329,16 +363,19 @@ async function startSession(sessionName, isManual = false) {
     let ultimoLoadingPercent = 0;
     let pageErrorListenersPuestos = false;
 
-    if (client) { 
+    if (client) {
         console.log('⚠️ [SESSION-4] Cliente existente detectado, destruyendo...');
-        try { 
-            await client.destroy(); 
+        // Se suelta ANTES de cerrarlo: así los avisos/errores que mande el Chrome viejo al morir se ignoran
+        // (antes un "Target closed" del viejo podía reiniciar todo el servidor)
+        const anterior = client;
+        client = null;
+        isClientReady = false;
+        try {
+            await anterior.destroy();
             console.log('✅ [SESSION-5] Cliente anterior destruido');
         } catch(e) {
             console.log('⚠️ [SESSION-6] Error destruyendo cliente:', e.message);
-        } 
-        client = null; 
-        isClientReady = false; 
+        }
     }
     
     try {
@@ -354,7 +391,7 @@ async function startSession(sessionName, isManual = false) {
     activeSessionName = sessionName;
     console.log(`✅ [SESSION-7] Variables de estado reseteadas`);
     
-    io.emit('status', `⏳ Cargando ${sessionName.toUpperCase()}...`);
+    emitStatus(`⏳ Cargando ${sessionName.toUpperCase()}...`);
 
     try {
         const folderPath = path.resolve(`./data/session-client-${sessionName}`);
@@ -406,13 +443,20 @@ async function startSession(sessionName, isManual = false) {
         puppeteer: puppeteerConfig,
         qrMaxRetries: isManual ? 5 : 0, 
         ffmpegPath: ffmpegPath,
-        
+
     });
+    // Este Chrome en particular. Si después se arranca otro, los avisos que lleguen de este viejo se ignoran
+    // (antes un aviso "LOGOUT" de un Chrome viejo podía borrar la memoria del Chrome nuevo).
+    const miCliente = client;
     console.log('✅ [WHATSAPP-2] Cliente WhatsApp creado');
 
     console.log('🎧 [EVENTS-1] Registrando event handlers...');
     
     client.on('qr', async (qr) => {
+        if (client !== miCliente) {
+            console.log(`ℹ️ [QR-0] QR de un Chrome que ya se cerró (${sessionName}): no se muestra`);
+            return;
+        }
         qrContador++;
         const tsQR = new Date().toISOString();
         console.log(`\n📸 ========== [QR-EVENTO #${qrContador}] ==========`);
@@ -431,22 +475,35 @@ async function startSession(sessionName, isManual = false) {
 
         if (!isManual) {
             console.log(`⛔ [QR-6] ${sessionName} requirió QR en modo AUTO. Deteniendo...`);
-            io.emit('status', `⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
+            emitStatus(`⚠️ SESIÓN ${sessionName.toUpperCase()} CADUCADA. REQUIERE INICIO MANUAL.`);
             abortandoPorFaltaDeQR = true;
+            terminarArranque();
             try {
-                await client.destroy();
+                await miCliente.destroy();
                 console.log('✅ [QR-7] Cliente destruido por falta de QR en modo AUTO');
             } catch(e) {
                 console.log('⚠️ [QR-8] Error destruyendo cliente en modo AUTO:', e.message);
             }
-            client = null;
-            isClientReady = false;
+            if (client === miCliente) {
+                client = null;
+                isClientReady = false;
+            }
+            return;
+        }
+
+        // El QR se dibuja aquí mismo (librería qrcode). Antes se mandaba a una página de internet ajena para dibujarlo.
+        let qrImagen;
+        try {
+            qrImagen = await QRCode.toDataURL(qr, { width: 250, margin: 1 });
+        } catch (e) {
+            console.error(`❌ [QR-9b] No se pudo dibujar el QR: ${e.message}`);
+            emitStatus(`❌ No se pudo dibujar el QR de ${sessionName.toUpperCase()} - ver logs`);
             return;
         }
 
         console.log(`📤 [QR-9] Emitiendo QR #${qrContador} al panel web...`);
-        io.emit('qr', qr);
-        io.emit('status', `📸 ESCANEA EL QR AHORA (${sessionName.toUpperCase()}) - intento #${qrContador}`);
+        io.emit('qr', qrImagen);
+        emitStatus(`📸 ESCANEA EL QR AHORA (${sessionName.toUpperCase()}) - intento #${qrContador}`);
         console.log(`✅ [QR-10] QR emitido al panel. Esperando que el teléfono escanee...`);
         console.log(`📸 ================================================\n`);
 
@@ -476,7 +533,7 @@ async function startSession(sessionName, isManual = false) {
                 console.log(`   → 2. Chrome/Puppeteer colgado internamente`);
                 console.log(`   → 3. Sesión anterior corrupta en ./data/session-client-${sessionName}`);
                 console.log(`   → 4. El evento 'authenticated' de whatsapp-web.js no está disparando`);
-                io.emit('status', `⚠️ 60s sin respuesta del servidor tras escaneo (${sessionName.toUpperCase()})`);
+                emitStatus(`⚠️ 60s sin respuesta del servidor tras escaneo (${sessionName.toUpperCase()})`);
             }
 
             if (segundosEspera >= 120) {
@@ -486,7 +543,7 @@ async function startSession(sessionName, isManual = false) {
                 const memTO = process.memoryUsage();
                 console.log(`🚨 [QR-MONITOR] RAM final: heap ${Math.round(memTO.heapUsed/1024/1024)}/${Math.round(memTO.heapTotal/1024/1024)}MB, RSS ${Math.round(memTO.rss/1024/1024)}MB`);
                 console.log(`🚨 [QR-MONITOR] Recomendación: borrar memoria de ${sessionName.toUpperCase()} y reintentar`);
-                io.emit('status', `🚨 TIMEOUT: Escaneo no se completó en 120s. Borra la memoria y reintenta.`);
+                emitStatus(`🚨 TIMEOUT: Escaneo no se completó en 120s. Borra la memoria y reintenta.`);
                 clearInterval(qrMonitorInterval);
                 qrMonitorInterval = null;
             }
@@ -494,6 +551,11 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('ready', () => {
+        if (client !== miCliente) {
+            console.log(`ℹ️ [READY-0] Aviso "ready" de un Chrome viejo de ${sessionName}: se ignora`);
+            return;
+        }
+        terminarArranque();
         isClientReady = true;
         // Limpiar monitores si aún corrían
         if (qrMonitorInterval) {
@@ -513,7 +575,7 @@ async function startSession(sessionName, isManual = false) {
         const memR = process.memoryUsage();
         console.log(`📊 [READY-6] RAM al estar listo: heap ${Math.round(memR.heapUsed/1024/1024)}/${Math.round(memR.heapTotal/1024/1024)}MB, RSS ${Math.round(memR.rss/1024/1024)}MB`);
 
-        io.emit('status', `✅ ACTIVO: ${sessionName.toUpperCase()}`);
+        emitStatus(`✅ ACTIVO: ${sessionName.toUpperCase()}`);
         io.emit('connected', {
             name: client.info.pushname,
             number: client.info.wid.user,
@@ -535,29 +597,44 @@ async function startSession(sessionName, isManual = false) {
         console.error(`   → La sesión guardada está corrupta o caducada`);
         console.error(`   → El teléfono cerró sesión de WhatsApp Web`);
         console.error(`   → Credenciales de la cuenta inválidas`);
-        io.emit('status', '⛔ FALLO DE AUTENTICACIÓN - ver logs');
         if (qrMonitorInterval) { clearInterval(qrMonitorInterval); qrMonitorInterval = null; }
         if (readyMonitorInterval) { clearInterval(readyMonitorInterval); readyMonitorInterval = null; }
+        if (client !== miCliente) {
+            console.log(`ℹ️ [AUTH-FAILURE-0] Era de un Chrome viejo de ${sessionName}: no se toca el actual`);
+            return;
+        }
+        terminarArranque();
+        emitStatus(`⛔ FALLO DE AUTENTICACIÓN (${sessionName.toUpperCase()}). Pica "Forzar/Escanear ${letraChip}" - ver logs`);
+        client = null;
+        isClientReady = false;
         try {
-            await client.destroy();
+            await miCliente.destroy();
             console.log('✅ [AUTH-FAILURE-7] Cliente destruido tras fallo');
         } catch(e) {
             console.log('⚠️ [AUTH-FAILURE-8] Error destruyendo:', e.message);
         }
-        client = null;
         if (!isManual) {
             console.log('🗑️ [AUTH-FAILURE-9] Borrando sesión por auth failure en modo AUTO');
             borrarSesion(sessionName);
         }
     });
 
-    client.on('disconnected', (reason) => {
+    client.on('disconnected', async (reason) => {
+        // WhatsApp a veces manda el mismo LOGOUT 2 o 3 veces seguidas: solo se atiende el primero
+        if (cerrandoPorLogout) {
+            console.log(`ℹ️ [DISCONNECTED-0] "${reason}" repetido de ${sessionName}: ya se está cerrando, se ignora`);
+            return;
+        }
+        if (client !== miCliente) {
+            console.log(`ℹ️ [DISCONNECTED-0] Aviso "${reason}" de un Chrome viejo de ${sessionName}: se ignora`);
+            return;
+        }
+        const estabaListo = isClientReady;
         isClientReady = false;
         console.log(`\n❌ [DISCONNECTED-1] ========== DESCONEXIÓN ==========`);
         console.log(`❌ [DISCONNECTED-2] Razón: "${reason}" | Sesión: ${sessionName}`);
         console.log(`❌ [DISCONNECTED-3] Timestamp: ${new Date().toISOString()}`);
-        console.log(`❌ [DISCONNECTED-4] isManual: ${isManual} | isClientReady era: ${isClientReady}`);
-        io.emit('status', `❌ Desconectado (${reason})`);
+        console.log(`❌ [DISCONNECTED-4] isManual: ${isManual} | isClientReady era: ${estabaListo} | 'authenticated' llegó: ${autenticadoRecibido}`);
         if (qrMonitorInterval) {
             clearInterval(qrMonitorInterval);
             qrMonitorInterval = null;
@@ -569,19 +646,44 @@ async function startSession(sessionName, isManual = false) {
             console.log('🧹 [DISCONNECTED-5b] Monitor post-autenticación limpiado');
         }
         if (reason === 'LOGOUT') {
-            console.log('🗑️ [DISCONNECTED-6] Borrando sesión por LOGOUT');
-            borrarSesion(sessionName);
+            // WhatsApp sacó a esta sesión. Antes se borraba la memoria con Chrome todavía abierto usándola:
+            // Chrome quedaba roto, nunca daba QR nuevo y el panel se quedaba en "Cargando" para siempre.
+            // Ahora: primero se cierra Chrome, luego se borra la memoria, y el panel dice qué hacer.
+            cerrandoPorLogout = true;
+            console.log('🛑 [DISCONNECTED-6] WhatsApp cerró la sesión (LOGOUT). Cerrando Chrome ANTES de borrar la memoria...');
+            emitStatus(`❌ ${sessionName.toUpperCase()} SE CERRÓ (LOGOUT). En tu celular borra el dispositivo vinculado y pica "Forzar/Escanear ${letraChip}"`);
+            client = null;
+            try {
+                await miCliente.destroy();
+                console.log('✅ [DISCONNECTED-7] Chrome cerrado');
+            } catch (e) {
+                console.log(`⚠️ [DISCONNECTED-7] Error cerrando Chrome (se sigue): ${e.message}`);
+            }
+            // Si mientras se cerraba ya se arrancó otro Chrome, NO se borra: esa carpeta ya es del nuevo
+            if (contadorArranques === idArranque) {
+                borrarSesion(sessionName);
+                console.log(`ℹ️ [DISCONNECTED-8] ${sessionName} queda apagado. Para volver: "Forzar/Escanear ${letraChip}" en el panel`);
+            } else {
+                console.log(`ℹ️ [DISCONNECTED-8] Ya se arrancó otro Chrome mientras se cerraba este: no se borra la memoria`);
+            }
+            terminarArranque();
+            return;
         }
+
+        terminarArranque();
+        emitStatus(`❌ ${sessionName.toUpperCase()} desconectado (${reason}). Pica "Forzar/Escanear ${letraChip}" para reconectar`);
     });
 
     client.on('loading_screen', (percent, message) => {
+        if (client !== miCliente) return; // Chrome viejo: no pisar el aviso del panel
         loadingScreenVisto = true;
         ultimoLoadingPercent = percent;
         console.log(`⏳ [LOADING-${String(percent).padStart(3,'0')}] ${percent}% - "${message}" | ${new Date().toISOString()}`);
-        io.emit('status', `⏳ Cargando WhatsApp ${percent}% - ${message} (${sessionName.toUpperCase()})`);
+        emitStatus(`⏳ Cargando WhatsApp ${percent}% - ${message} (${sessionName.toUpperCase()})`);
     });
 
     client.on('authenticated', () => {
+        if (client !== miCliente) return; // Chrome viejo: no pisar el aviso del panel
         autenticadoRecibido = true;
         const tiempoDesdeQR = qrEscaneoTime ? Math.round((Date.now() - qrEscaneoTime) / 1000) : 'N/A';
         console.log(`\n🔐 [AUTHENTICATED-1] ========== AUTENTICACIÓN EXITOSA ==========`);
@@ -591,7 +693,7 @@ async function startSession(sessionName, isManual = false) {
         console.log(`🔐 [AUTHENTICATED-5] Ahora WhatsApp cargará la pantalla (evento 'loading_screen') y luego 'ready'`);
         const memA = process.memoryUsage();
         console.log(`📊 [AUTHENTICATED-6] RAM: heap ${Math.round(memA.heapUsed/1024/1024)}/${Math.round(memA.heapTotal/1024/1024)}MB, RSS ${Math.round(memA.rss/1024/1024)}MB`);
-        io.emit('status', `🔐 Autenticado! Cargando WhatsApp Web... (${sessionName.toUpperCase()})`);
+        emitStatus(`🔐 Autenticado! Cargando WhatsApp Web... (${sessionName.toUpperCase()})`);
 
         // ===== READY-MONITOR: vigila el camino 'authenticated' -> 'ready' y dice el PORQUÉ si se atora =====
         // 1) Engancha la vigilancia de la PÁGINA de WhatsApp Web (los errores JS revelan incompatibilidad de versión)
@@ -640,7 +742,7 @@ async function startSession(sessionName, isManual = false) {
                 console.log(`🚨 [READY-MONITOR] Título de la página: "${titulo}"`);
                 console.log(`🚨 [READY-MONITOR] La pantalla mostraba: "${textoVisible}"`);
                 console.log(`🚨 [READY-MONITOR] (Revisa arriba si hay líneas [WEB-PAGEERROR] o [WEB-CONSOLE-error] — ahí está el PORQUÉ real)`);
-                io.emit('status', `🚨 ATORADO tras autenticar (estado: ${estado}) - ver logs`);
+                emitStatus(`🚨 ATORADO tras autenticar (estado: ${estado}) - ver logs`);
                 clearInterval(readyMonitorInterval);
                 readyMonitorInterval = null;
             }
@@ -648,8 +750,9 @@ async function startSession(sessionName, isManual = false) {
     });
 
     client.on('change_state', (state) => {
+        if (client !== miCliente) return; // Chrome viejo: no pisar el aviso del panel
         console.log(`🔄 [STATE-CHANGE] Estado de conexión → "${state}" | ${new Date().toISOString()}`);
-        io.emit('status', `🔄 Estado interno: ${state} (${sessionName.toUpperCase()})`);
+        emitStatus(`🔄 Estado interno: ${state} (${sessionName.toUpperCase()})`);
     });
     
     console.log('✅ [EVENTS-2] Event handlers registrados');
@@ -669,7 +772,15 @@ async function startSession(sessionName, isManual = false) {
             return;
         }
 
-        io.emit('status', `❌ Error: no cargó WhatsApp Web (${sessionName.toUpperCase()}) - ver logs`);
+        // Si este Chrome se cerró a propósito (por LOGOUT o porque se arrancó otro), el error es normal:
+        // no se pisa el aviso del panel ni se reinicia el servidor
+        if (client !== miCliente) {
+            console.log('ℹ️ [INITIALIZE-3b] Este Chrome ya se había cerrado a propósito - no se hace nada más');
+            return;
+        }
+
+        terminarArranque();
+        emitStatus(`❌ Error: no cargó WhatsApp Web (${sessionName.toUpperCase()}). Pica "Forzar/Escanear ${letraChip}" - ver logs`);
 
         // Diagnóstico: qué mostraba WhatsApp Web al fallar (ej. "actualiza tu navegador" o si seguía cargando)
         try {
@@ -883,11 +994,12 @@ const processQueue = async () => {
         isPaused = true; 
         const minutosPausa = getRandomDelay(8, 15); 
         console.log(`☕ [PAUSE-1] PAUSA "BAÑO/CAFÉ" DE ${minutosPausa} MINUTOS...`);
-        io.emit('status', `☕ Descanso (${minutosPausa} min)`);
+        emitStatus(`☕ Descanso (${minutosPausa} min)`);
         
         setTimeout(() => { 
             console.log('✅ [PAUSE-2] Fin de pausa, reanudando...');
-            isPaused = false; 
+            isPaused = false;
+            if (isClientReady && activeSessionName) emitStatus(`✅ ACTIVO: ${activeSessionName.toUpperCase()}`);
             mensajesEnRacha = 0; 
             limiteRachaActual = getRandomDelay(5, 9);
             processQueue(); 
@@ -1038,16 +1150,24 @@ const processQueue = async () => {
 // --- RUTAS API --- 
 console.log('🛣️ [ROUTES-1] Configurando rutas...');
 
-app.post('/iniciar-chip-a', authMiddleware, (req, res) => { 
+function iniciarManual(sessionName, res) {
+    if (arranqueEnCurso(sessionName)) {
+        const segundos = Math.round((Date.now() - arranque.desde) / 1000);
+        console.log(`🚫 [ROUTE] ${sessionName} ya se está iniciando (hace ${segundos}s). Se ignora el clic para no romper el vínculo`);
+        return res.json({ success: false, message: `⏳ ${sessionName.toUpperCase()} ya se está iniciando (hace ${segundos}s). Espera el QR o el resultado; no vuelvas a picar.` });
+    }
+    startSession(sessionName, true);
+    res.json({ success: true, message: `Iniciando ${sessionName} manual` });
+}
+
+app.post('/iniciar-chip-a', authMiddleware, (req, res) => {
     console.log('🔵 [ROUTE] POST /iniciar-chip-a');
-    startSession('chip-a', true); 
-    res.json({ success: true, message: 'Iniciando chip-a manual' }); 
+    iniciarManual('chip-a', res);
 });
 
-app.post('/iniciar-chip-b', authMiddleware, (req, res) => { 
+app.post('/iniciar-chip-b', authMiddleware, (req, res) => {
     console.log('🟢 [ROUTE] POST /iniciar-chip-b');
-    startSession('chip-b', true); 
-    res.json({ success: true, message: 'Iniciando chip-b manual' }); 
+    iniciarManual('chip-b', res);
 });
 
 app.post('/enviar', authMiddleware, (req, res) => {
@@ -1169,7 +1289,8 @@ app.get('/status', (req, res) => {
         ciclo: `P:${pdfEnCiclo}/3 N:${normalEnCiclo}/2`,
         racha: `${mensajesEnRacha}/${limiteRachaActual}`,
         session: activeSessionName,
-        pausa: isPaused 
+        pausa: isPaused,
+        text: statusActual()
     });
 });
 
@@ -1195,13 +1316,10 @@ console.log('🔌 [SOCKET-3] Configurando Socket.IO connection handler...');
 io.on('connection', (socket) => {
     console.log('🔗 [SOCKET-CONNECTION] Nuevo cliente conectado:', socket.id);
     
-    if(activeSessionName) {
-        const statusMsg = isClientReady 
-            ? `✅ ACTIVO: ${activeSessionName.toUpperCase()}` 
-            : `⏳ Cargando ${activeSessionName.toUpperCase()}...`;
-        console.log(`📤 [SOCKET-EMIT] Enviando status: ${statusMsg}`);
-        socket.emit('status', statusMsg);
-    }
+    // Se manda lo último que pasó de verdad (antes siempre decía "Cargando" si no estaba listo)
+    const statusMsg = statusActual();
+    console.log(`📤 [SOCKET-EMIT] Enviando status: ${statusMsg}`);
+    socket.emit('status', statusMsg);
     
     socket.on('disconnect', () => {
         console.log('👋 [SOCKET-DISCONNECT] Cliente desconectado:', socket.id);
