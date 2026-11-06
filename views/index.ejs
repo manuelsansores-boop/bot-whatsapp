@@ -195,13 +195,17 @@
             statusBox.className = 'status'; 
             if(msg.includes('ACTIVO')) statusBox.classList.add('ready');
             else if(msg.includes('Cargando') || msg.includes('ESCANEA')) statusBox.classList.add('wait');
-            else if(msg.includes('Error') || msg.includes('Desconectado') || msg.includes('DETENIDO')) statusBox.classList.add('error');
+            else if(msg.includes('Error') || msg.includes('Desconectado') || msg.includes('DETENIDO') || msg.includes('❌') || msg.includes('⛔')) statusBox.classList.add('error');
             else statusBox.classList.add('idle');
+            // Si la sesión se cayó, se quita el QR viejo para que nadie lo escanee de balde
+            if (msg.includes('LOGOUT') || msg.includes('desconectado') || msg.includes('FALLO') || msg.includes('CADUCADA')) qrArea.innerHTML = '';
             addLog(msg);
         }
 
-        socket.on('qr', (code) => {
-            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(code)}" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA AHORA</p></div>`;
+        // El servidor ya manda el QR dibujado (imagen). Ya no se usa una página de internet ajena para dibujarlo.
+        socket.on('qr', (imagen) => {
+            if (typeof imagen !== 'string' || !imagen.startsWith('data:image/')) return;
+            qrArea.innerHTML = `<div style="background:white; padding:10px; border-radius:10px; display:inline-block;"><img src="${imagen}" width="250" height="250" /><p style="font-weight:bold; margin-top:5px;">📸 ESCANEA AHORA</p></div>`;
         });
         
         socket.on('connected', (u) => {
